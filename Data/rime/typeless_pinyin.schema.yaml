@@ -1,0 +1,108 @@
+# Rime schema
+# encoding: utf-8
+#
+# The Chinese mode of Typeless-Rev: pinyin in, simplified Chinese characters out.
+# Everything else is ASCII. Derived from luna_pinyin (same dictionary), with the
+# parts that produce anything but Chinese characters removed:
+#   - punctuation keys commit their own ASCII character (a punctuation key typed while
+#     composing commits the highlighted candidate first, then the character);
+#   - no symbol/emoji candidates, no stroke reverse lookup, no full-width forms;
+#   - no mode switches of Rime's own: English/Chinese is switched by the input method.
+
+schema:
+  schema_id: typeless_pinyin
+  name: Pinyin
+  version: "1"
+  description: |
+    Pinyin to simplified Chinese characters, ASCII punctuation.
+
+# Simplified output through OpenCC (Data/opencc/t2s.json). Reset to on, so every
+# new session starts simplified; there is no switch to turn it off.
+switches:
+  - name: zh_hans
+    reset: 1
+    states: [ traditional, simplified ]
+
+engine:
+  processors:
+    - recognizer
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+  filters:
+    - simplifier@zh_hans
+    - uniquifier
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+  algebra:
+    __patch:
+      - pinyin:/abbreviation
+      - pinyin:/spelling_correction
+      - pinyin:/key_correction
+
+translator:
+  dictionary: luna_pinyin
+  prism: typeless_pinyin
+  preedit_format:
+    - xform/([nl])v/$1ü/
+    - xform/([nl])ue/$1üe/
+    - xform/([jqxy])v/$1u/
+
+# A capital letter starts a literal run ("Hello"), so English words typed in the
+# Chinese mode are not turned into pinyin.
+recognizer:
+  patterns:
+    uppercase: "[A-Z][-_+.'0-9A-Za-z]*$"
+
+zh_hans:
+  option_name: zh_hans
+  opencc_config: t2s.json
+  tips: none
+
+# Every printable ASCII punctuation key maps to itself. A plain string commits at once.
+punctuator:
+  half_shape:
+    ',': ','
+    '.': '.'
+    '?': '?'
+    '!': '!'
+    ';': ';'
+    ':': ':'
+    '"': '"'
+    '(': '('
+    ')': ')'
+    '[': '['
+    ']': ']'
+    '{': '{'
+    '}': '}'
+    '<': '<'
+    '>': '>'
+    '/': '/'
+    '\': '\'
+    '|': '|'
+    '`': '`'
+    '~': '~'
+    '@': '@'
+    '#': '#'
+    '$': '$'
+    '%': '%'
+    '^': '^'
+    '&': '&'
+    '*': '*'
+    '-': '-'
+    '_': '_'
+    '+': '+'
+    '=': '='
+    '''': ''''

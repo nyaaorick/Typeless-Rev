@@ -1,0 +1,6 @@
+vendor/
+build/
+*.xcodeproj
+Resources/Info.plist
+default.profraw
+.DS_Store

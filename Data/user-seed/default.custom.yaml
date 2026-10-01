@@ -1,0 +1,9 @@
+# managed-by: typeless-rev
+# Typeless-Rev defaults. The app refreshes this file whenever the first line above is
+# present and the bundled copy has changed. To keep your own version, delete that line.
+patch:
+  schema_list:
+    - schema: typeless_pinyin
+  menu/page_size: 5
+  # Rime's own schema menu (and its mode switches) is not part of this input method.
+  switcher/hotkeys: []
