@@ -36,10 +36,17 @@ enum VoiceAssets {
     static func areInstalled(locales: [Locale]) async -> Bool {
         for locale in locales {
             guard let resolved = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else { return false }
-            let transcriber = VoiceSession.makeTranscriber(locale: resolved)
-            guard await AssetInventory.status(forModules: [transcriber]) == .installed else { return false }
+            guard await isInstalled(VoiceSession.makeTranscriber(locale: resolved), locale: resolved) else { return false }
         }
         return true
+    }
+
+    /// `AssetInventory.status` alone is not enough: in a fresh process it answers `.supported` for
+    /// models that are on disk and transcribe fine, until something asks for an installation request.
+    /// `installedLocales` is right from the start.
+    static func isInstalled(_ transcriber: SpeechTranscriber, locale: Locale) async -> Bool {
+        if await AssetInventory.status(forModules: [transcriber]) == .installed { return true }
+        return await SpeechTranscriber.installedLocales.contains { $0.identifier == locale.identifier }
     }
 
     static func download(locale: Locale) async throws {

@@ -17,7 +17,7 @@ enum UISelfTest {
         let defaults = UserDefaults.standard
         let keys = [
             VoiceSettings.localeKey, VoiceSettings.pushToTalkKeyKey, VoiceSettings.polishEnabledKey,
-            VoiceSettings.polishCrashesKey, VoiceSettings.polishDisabledByCrashKey,
+            VoiceSettings.polishCrashesKey, VoiceSettings.polishDisabledByCrashKey, KeyboardLayout.englishKey,
         ]
         let saved = keys.map { defaults.object(forKey: $0) }
         defer { zip(keys, saved).forEach { defaults.set($1, forKey: $0) } }
@@ -31,7 +31,7 @@ enum UISelfTest {
         status.menuNeedsUpdate(status.menu)
         let titles = status.menu.items.filter { !$0.isSeparatorItem }.map(\.title)
         print("      menu: \(titles.joined(separator: " | "))")
-        for expected in ["Ready", "Polish with Local LLM", "Speech Language", "Push-to-Talk Key",
+        for expected in ["Ready", "Polish with Local LLM", "Speech Language", "Push-to-Talk Key", "English Keyboard Layout",
             "Open Rime Folder", "Redeploy Rime", "About Typeless-Rev", "Quit Typeless-Rev"] {
             check("menu has \"\(expected)\"", titles.contains(expected))
         }
@@ -66,6 +66,16 @@ enum UISelfTest {
 
         click(item("Push-to-Talk Key")?.submenu?.items.first { $0.title == "Right Control" })
         check("choosing a key saves it", VoiceSettings.pushToTalkKey == .rightControl)
+
+        // English types with ABC unless another enabled layout is picked; a stale pick falls back.
+        defaults.removeObject(forKey: KeyboardLayout.englishKey)
+        check("English defaults to ABC", KeyboardLayout.english == KeyboardLayout.pinyinBase, KeyboardLayout.english)
+        if let other = KeyboardLayout.choices.first(where: { $0.id != KeyboardLayout.pinyinBase }) {
+            click(item("English Keyboard Layout")?.submenu?.items.first { $0.representedObject as? String == other.id })
+            check("choosing a layout saves it", KeyboardLayout.english == other.id, other.id)
+        }
+        KeyboardLayout.setEnglish("com.example.not-enabled")
+        check("a layout that is no longer enabled falls back to ABC", KeyboardLayout.english == KeyboardLayout.pinyinBase)
 
         // MARK: a run that dies inside the polish model
         let crashGuard = PolishCrashGuard.shared

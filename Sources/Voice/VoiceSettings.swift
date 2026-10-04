@@ -20,9 +20,7 @@ enum VoiceSettings {
     static let polishEnabledKey = "polishEnabled"
     static let polishCrashesKey = "polishCrashes"
     static let polishDisabledByCrashKey = "polishDisabledByCrash"
-
-    /// How long to wait for the polish step, loading included, before committing the raw text.
-    static let polishTimeout: Duration = .seconds(3)
+    static let polishOffloadedKey = "polishOffloaded"
 
     /// Whether the transcript is polished by the local LLM. Defaults to on.
     static var polishEnabled: Bool {
@@ -69,6 +67,15 @@ enum VoiceSettings {
 
     static func setPolishDisabledByCrash(_ disabled: Bool) {
         UserDefaults.standard.set(disabled, forKey: polishDisabledByCrashKey)
+    }
+
+    /// True after the menu's Offload: the polish model stays on disk, out of memory, until Load.
+    static var polishOffloaded: Bool {
+        UserDefaults.standard.bool(forKey: polishOffloadedKey)
+    }
+
+    static func setPolishOffloaded(_ offloaded: Bool) {
+        UserDefaults.standard.set(offloaded, forKey: polishOffloadedKey)
     }
 
     static var pushToTalkKey: PushToTalkKey {

@@ -28,6 +28,34 @@ final class KeyTranslatorTests: XCTestCase {
         XCTAssertEqual(key(18, "!", .shift), RimeKeyEvent(keycode: 0x21, mask: RimeModifier.shift))
     }
 
+    /// Under the ABC override AppKit reports Shift+/ as "/" ignoring modifiers and "?" with them.
+    func testShiftedPunctuationUsesTypedCharacter() {
+        let shifted: [(code: UInt16, base: String, typed: String)] = [
+            (44, "/", "?"), (41, ";", ":"), (39, "'", "\""), (43, ",", "<"), (47, ".", ">"),
+            (18, "1", "!"), (33, "[", "{"), (27, "-", "_"),
+        ]
+        for (code, base, typed) in shifted {
+            XCTAssertEqual(
+                KeyTranslator.keyDown(
+                    keyCode: code, characters: typed, charactersIgnoringModifiers: base, flags: .shift),
+                RimeKeyEvent(keycode: Int32(typed.unicodeScalars.first!.value), mask: RimeModifier.shift),
+                typed)
+        }
+    }
+
+    func testControlShiftKeepsBaseCharacter() {
+        XCTAssertEqual(
+            KeyTranslator.keyDown(
+                keyCode: 44, characters: "\u{1f}", charactersIgnoringModifiers: "/", flags: [.control, .shift]),
+            RimeKeyEvent(keycode: 0x2f, mask: RimeModifier.control | RimeModifier.shift))
+    }
+
+    func testShiftedLetterFromCharactersStillFoldsCase() {
+        XCTAssertEqual(
+            KeyTranslator.keyDown(keyCode: 0, characters: "a", charactersIgnoringModifiers: "a", flags: [.shift, .capsLock]),
+            RimeKeyEvent(keycode: 0x61, mask: RimeModifier.shift | RimeModifier.lock))
+    }
+
     func testControlCombinationUsesBaseLetter() {
         XCTAssertEqual(key(45, "n", .control), RimeKeyEvent(keycode: 0x6e, mask: RimeModifier.control))
     }

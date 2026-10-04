@@ -23,11 +23,11 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(stateChanged), name: .voicePhaseChanged, object: nil)
         NotificationCenter.default.addObserver(
-            self, selector: #selector(stateChanged), name: .softCapsLockChanged, object: nil)
+            self, selector: #selector(modelChanged), name: .polishResidencyChanged, object: nil)
         engine.onStateChange = { [weak self] _ in self?.stateChanged() }
         installer.onChange = { [weak self] in
             self?.stateChanged()
-            self?.modelItem?.title = self?.modelTitle() ?? ""
+            self?.modelChanged()
         }
     }
 
@@ -37,13 +37,20 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         refreshIcon()
     }
 
+    /// Keeps the model entry current while the menu is open (download progress, load finishing).
+    @objc private func modelChanged() {
+        guard let modelItem else { return }
+        modelItem.title = modelTitle()
+        modelItem.submenu = modelSubmenu()
+    }
+
     private func refreshIcon() {
         let (symbol, tint): (String, NSColor?) =
             switch VoiceStatus.phase {
             case .listening: ("mic.fill", .systemRed)
             case .polishing: ("sparkles", nil)
             case .idle where engine.state == .failed: ("exclamationmark.triangle", nil)
-            case .idle: (SoftCapsLock.isOn ? "capslock.fill" : "mic", nil)
+            case .idle: ("mic", nil)
             }
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Typeless-Rev")
         image?.isTemplate = true
@@ -93,6 +100,21 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             key.submenu?.addItem(item)
         }
         menu.addItem(key)
+
+        // The layout English mode types with; Chinese mode always uses ABC for pinyin.
+        let layout = NSMenuItem(title: "English Keyboard Layout", action: nil, keyEquivalent: "")
+        layout.submenu = NSMenu()
+        layout.submenu?.autoenablesItems = false
+        let current = KeyboardLayout.english
+        for choice in KeyboardLayout.choices {
+            let item = NSMenuItem(title: choice.name, action: #selector(selectLayout(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.id
+            item.state = choice.id == current ? .on : .off
+            item.isEnabled = true
+            layout.submenu?.addItem(item)
+        }
+        menu.addItem(layout)
 
         menu.addItem(.separator())
         addPermissionItems()
@@ -147,15 +169,6 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             add(microphone.menuTitle("Microphone"), enabled: false)
         }
 
-        // Long press of the 中/英 key (Caps Lock) needs it; without it the key only switches language.
-        let monitoring = ModeKeyMonitor.permission
-        if let action = monitoring.actionTitle {
-            let item = add(monitoring.menuTitle("Input Monitoring") + " — " + action, #selector(fixInputMonitoring))
-            item.representedObject = monitoring == .notDetermined
-        } else {
-            add(monitoring.menuTitle("Input Monitoring"), enabled: false)
-        }
-
         if VoiceAssets.isInstalling {
             add("Speech Data: Downloading…", enabled: false)
         } else if speechDataFailed {
@@ -189,7 +202,12 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         case .notInstalled: return "Polish Model: Not Installed"
         case .downloading(let fraction): return "Polish Model: Downloading \(Int(fraction * 100))%"
         case .preparing: return "Polish Model: Preparing…"
-        case .installed(let bytes): return "Polish Model: Ready (\(Self.size(bytes)))"
+        case .installed(let bytes):
+            switch PolishEngine.residency {
+            case .loaded: return "Polish Model: Loaded (\(Self.size(bytes)))"
+            case .loading: return "Polish Model: Loading…"
+            case .offloaded: return "Polish Model: Offloaded (\(Self.size(bytes)) on disk)"
+            }
         case .failed: return "Polish Model: Download Failed"
         }
     }
@@ -211,7 +229,17 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         case .preparing:
             item("Removing the vision encoder…", nil)
         case .installed:
-            item("Move to Trash", #selector(removeModel))
+            // Loaded, it can be offloaded; offloaded, it can be loaded again or uninstalled.
+            switch PolishEngine.residency {
+            case .loaded:
+                item("Offload from Memory", #selector(offloadModel))
+            case .loading:
+                item("Loading into memory…", nil)
+                item("Cancel and Offload", #selector(offloadModel))
+            case .offloaded:
+                item("Load into Memory", #selector(loadModel))
+                item("Uninstall (Move to Trash)", #selector(removeModel))
+            }
         case .failed(let message):
             item(message, nil)
             item("Try Again", #selector(downloadModel))
@@ -241,14 +269,6 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         }
     }
 
-    @objc private func fixInputMonitoring(_ sender: NSMenuItem) {
-        if sender.representedObject as? Bool == true {
-            ModeKeyMonitor.requestAccess()
-        } else {
-            ModeKeyMonitor.openSettings()
-        }
-    }
-
     @objc private func downloadSpeechData() {
         speechDataFailed = false
         VoiceAssets.install(locales: speechLocales()) { [weak self] result in
@@ -267,9 +287,16 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         }
     }
 
+    /// Applies at the next focus or language switch.
+    @objc private func selectLayout(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? String { KeyboardLayout.setEnglish(id) }
+    }
+
     @objc private func downloadModel() { installer.install() }
     @objc private func cancelModel() { installer.cancel() }
     @objc private func removeModel() { installer.remove() }
+    @objc private func loadModel() { Task { await PolishEngine.shared.load() } }
+    @objc private func offloadModel() { Task { await PolishEngine.shared.offload() } }
 
     @objc private func openRimeFolder() {
         NSWorkspace.shared.open(AppPaths.userDataDir)

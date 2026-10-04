@@ -12,12 +12,8 @@ final class TypelessInputController: IMKInputController {
     private var hasMarkedText = false
     /// English is a pass-through: Rime sees no key until the user switches to Chinese.
     private var mode = InputMode.english
-    /// Tells a tap of the 中/英 key from a long press; `longPressTimer` fires while the key is down.
-    private var modeKey = ModeKeyClassifier()
-    private var longPressTimer: Timer?
-    private var modeKeyDownAt: TimeInterval = 0
-    /// Caps Lock events up to this time are echoes of our own lock clear.
-    private static var modeKeyQuietUntil: TimeInterval = 0
+    /// Keeps the mode when focus only bounced away (system UI taking input for a moment).
+    private var focus = FocusBounce()
     /// Shift was held for a capital letter in Chinese mode: English until Shift comes up.
     private var shiftEnglish = false
 
@@ -30,10 +26,15 @@ final class TypelessInputController: IMKInputController {
     private var skipPolish = false
     /// A finished transcript waiting for the polish model; it stays on screen as marked text.
     private var pendingPolish: PendingPolish?
+    /// The field around the cursor, read when the push-to-talk key went down.
+    private var dictation: DictationContext?
+    /// What voice last wrote here, so consecutive dictation need not read the field again.
+    private var recent = RecentCommit()
 
     private struct PendingPolish {
         let id = UUID()
         let raw: String
+        let context: DictationContext?
     }
 
     deinit {
@@ -49,22 +50,29 @@ final class TypelessInputController: IMKInputController {
         Int(NSEvent.EventTypeMask([.keyDown, .flagsChanged]).rawValue)
     }
 
-    /// Every focus change starts in English, with the user's own keyboard layout.
+    /// Short id for the log: one controller per text field, each with its own mode.
+    private var tag: String { String(UInt(bitPattern: ObjectIdentifier(self).hashValue) & 0xFFFF, radix: 16) }
+
+    /// Every focus starts in English, with the user's own keyboard layout, unless focus only
+    /// bounced away for a moment (`FocusBounce`).
     override func activateServer(_ sender: Any!) {
-        mode = .english
-        resetModeKeys()
-        // The keyboard reports the key to whichever field has focus now.
-        ModeKeyMonitor.shared.start()
-        ModeKeyMonitor.shared.onKey = { [weak self] down in self?.modeKeyChanged(down: down) }
-        clearRealCapsLock()
+        Log.ime.info(
+            "activate \(self.tag, privacy: .public) in \((sender as? IMKTextInput)?.bundleIdentifier() ?? "?", privacy: .public), mode was \(String(describing: self.mode), privacy: .public)")
+        let kept = focus.modeOnActivation(current: mode, at: ProcessInfo.processInfo.systemUptime)
+        mode = kept == .chinese && engine.isReady && ensureSession() ? .chinese : .english
+        if mode == .chinese { Log.ime.info("focus bounced back to \(self.tag, privacy: .public): keeping Chinese") }
+        shiftEnglish = false
         applyKeyboard(client: sender as? IMKTextInput)
         pushToTalk = PushToTalkDetector(key: VoiceSettings.pushToTalkKey)
     }
 
     override func deactivateServer(_ sender: Any!) {
+        Log.ime.info("deactivate \(self.tag, privacy: .public), mode \(String(describing: self.mode), privacy: .public)")
+        focus.deactivated(at: ProcessInfo.processInfo.systemUptime)
         pushToTalk.reset()
-        resetModeKeys()
+        shiftEnglish = false
         commitComposition(sender)
+        recent.invalidate()
         CandidatePanel.shared.hide()
     }
 
@@ -74,8 +82,9 @@ final class TypelessInputController: IMKInputController {
         if let pending = pendingPolish {
             pendingPolish = nil
             setVoiceIdle()
-            (sender as? IMKTextInput)?.insertText(pending.raw, replacementRange: Self.notFound)
-            hasMarkedText = false
+            if let client = sender as? IMKTextInput {
+                insertVoiceText(pending.raw, context: pending.context, client: client)
+            }
             return
         }
         // An unfinished utterance is dropped, never written: the field that had focus
@@ -95,26 +104,28 @@ final class TypelessInputController: IMKInputController {
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, let client = sender as? IMKTextInput else { return false }
         if let handled = handleVoice(event, client: client) { return handled }
+        // Typing, deleting, or moving the cursor: the field is no longer what voice left it.
+        if event.type == .keyDown { recent.invalidate() }
         if event.type == .flagsChanged {
             if event.keyCode == InputMode.switchKeyCode {
-                modeKeyEvent(lockOn: event.modifierFlags.contains(.capsLock))
+                modeKeyPressed(flags: event.modifierFlags)
             } else if shiftEnglish, !event.modifierFlags.contains(.shift) {
                 shiftEnglish = false
             }
             // Modifier events are never swallowed: the host app still sees them.
             return false
         }
-        // The input method's own Caps Lock types capitals itself; nothing else changes in English.
-        // Without Input Monitoring there is no Caps Lock at all: the real lock can be left on for a
-        // moment by the key press, so letters are typed in lower case (capitals with Shift) here.
-        if event.type == .keyDown, mode == .english {
-            let capitals: Bool? =
-                SoftCapsLock.isOn ? true
-                : (!ModeKeyMonitor.shared.isRunning && event.modifierFlags.contains(.capsLock)) ? false : nil
-            if let capitals, let text = Self.letterText(event, capitals: capitals) {
-                client.insertText(text, replacementRange: Self.notFound)
-                return true
-            }
+        // Which mode each key lands in, and in which controller; never which key it was.
+        if event.type == .keyDown {
+            Log.ime.debug("key in \(String(describing: self.mode), privacy: .public) by \(self.tag, privacy: .public)")
+        }
+        // The real lock follows the 中/英 key, so English letters take their case from the guard
+        // whenever a lock is on. Not in a password field: nothing is typed for the user there.
+        if event.type == .keyDown, mode == .english, !SecureInput.isActive,
+            let text = CapsLockGuard.shared.englishText(event.characters, flags: event.modifierFlags)
+        {
+            client.insertText(text, replacementRange: Self.notFound)
+            return true
         }
         // English mode leaves every key to the host app, so typing is exactly the native keyboard.
         // So does a password field: no composition, no candidate window, nothing recorded.
@@ -140,6 +151,7 @@ final class TypelessInputController: IMKInputController {
         guard
             let key = KeyTranslator.keyDown(
                 keyCode: event.keyCode,
+                characters: event.characters,
                 charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                 flags: event.modifierFlags.subtracting(.capsLock))
         else { return false }
@@ -149,16 +161,6 @@ final class TypelessInputController: IMKInputController {
     }
 
     // MARK: - English / Chinese
-
-    /// The letter a key types with Caps Lock on (`capitals`) or forced off: Shift flips the case,
-    /// as on macOS. Nil for anything that is not a plain letter, which goes to the host app unchanged.
-    private static func letterText(_ event: NSEvent, capitals: Bool) -> String? {
-        let flags = event.modifierFlags
-        guard flags.isDisjoint(with: [.command, .control, .option]), let characters = event.characters,
-            characters.count == 1, characters.first?.isLetter == true
-        else { return nil }
-        return capitals != flags.contains(.shift) ? characters.uppercased() : characters.lowercased()
-    }
 
     private static func isShiftedLetter(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags
@@ -170,95 +172,22 @@ final class TypelessInputController: IMKInputController {
 
     // MARK: - 中/英 key
 
-    /// The keyboard's own down and up for the key (`ModeKeyMonitor`).
-    private func modeKeyChanged(down: Bool) {
-        guard let client = self.client() else { return resetModeKeys() }
-        let now = ProcessInfo.processInfo.systemUptime
-        if down {
-            modeKeyDownAt = now
-            modeKey.press(at: now)
-            longPressTimer?.invalidate()
-            let timer = Timer(timeInterval: ModeKeyClassifier.holdThreshold, repeats: false) { [weak self] _ in
-                guard let self, let client = self.client() else { return }
-                if self.modeKey.held(at: ProcessInfo.processInfo.systemUptime) == .longPress {
-                    self.toggleCapsLock(client: client)
-                }
-            }
-            // Common modes: the timer must fire while the system is tracking events too.
-            RunLoop.main.add(timer, forMode: .common)
-            longPressTimer = timer
-            return
-        }
-        longPressTimer?.invalidate()
-        longPressTimer = nil
-        let action = modeKey.release(at: now)
-        let held = String(format: "%.3f", now - modeKeyDownAt)
-        let outcome = action.map { String(describing: $0) } ?? "long press, already handled"
-        Log.ime.info("mode key released after \(held, privacy: .public)s: \(outcome, privacy: .public)")
+    /// One press of the key, as `CapsLockGuard` reads it. The real lock is never touched.
+    private func modeKeyPressed(flags: NSEvent.ModifierFlags) {
+        let shift = CapsLockGuard.shiftHeld(flags)
+        let action = CapsLockGuard.shared.press(shift: shift, at: ProcessInfo.processInfo.systemUptime)
+        Log.ime.info(
+            "mode key: shift \(shift ? "held" : "up", privacy: .public), real lock \(flags.contains(.capsLock) ? "on" : "off", privacy: .public), \(action.map { String(describing: $0) } ?? "duplicate, ignored", privacy: .public)")
+        guard let action, let client = self.client() else { return }
         switch action {
-        case .tap: tapModeKey(client: client)
-        case .longPress: toggleCapsLock(client: client)
-        case nil: break
-        }
-        clearRealCapsLock()
-    }
-
-    /// The Caps Lock events macOS sends for the key. With the keyboard monitor running they carry
-    /// nothing new. Without Input Monitoring they are all there is, and they cannot time a press:
-    /// the lock turning on counts as a tap that only switches language. There is no long press and
-    /// no Caps Lock; English stays lower case.
-    private func modeKeyEvent(lockOn: Bool) {
-        guard !ModeKeyMonitor.shared.isRunning else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        guard lockOn, now >= Self.modeKeyQuietUntil, let client = self.client() else { return }
-        Log.ime.info("mode key tap (no Input Monitoring, so no long press)")
-        Self.modeKeyQuietUntil = now + 0.3
-        tapModeKey(client: client)
-        clearRealCapsLockSoon()
-    }
-
-    /// Without the keyboard monitor there is no key-up to wait for, and turning the lock off while
-    /// the key is still down does not stick (it comes straight back on). So wait, and retry until
-    /// it stays off, ignoring the echo of each try.
-    private func clearRealCapsLockSoon(attempt: Int = 0) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            guard let self, CapsLock.isOn == true else { return }
-            Self.modeKeyQuietUntil = ProcessInfo.processInfo.systemUptime + 0.3
-            CapsLock.clear()
-            if attempt < 8 { self.clearRealCapsLockSoon(attempt: attempt + 1) }
+        case .switchLanguage: switchMode(client: client)
+        case .capsLockOn: capsLockTurnedOn(client: client)
+        case .capsLockOff: CandidatePanel.shared.presentTip("Caps Lock off", anchor: caretRect(client), duration: 0.9)
         }
     }
 
-    /// The real lock is never wanted on: Caps Lock is `SoftCapsLock`. The key press can leave it
-    /// on, so turn it off once the key is up, and ignore the echo that produces.
-    private func clearRealCapsLock() {
-        guard !ModeKeyMonitor.shared.isDown, CapsLock.isOn == true else { return }
-        Self.modeKeyQuietUntil = ProcessInfo.processInfo.systemUptime + 0.2
-        CapsLock.clear()
-    }
-
-    private func resetModeKeys() {
-        longPressTimer?.invalidate()
-        longPressTimer = nil
-        modeKey.reset()
-        shiftEnglish = false
-    }
-
-    /// A tap steps back one state: Caps Lock off if it is on, otherwise the other language.
-    private func tapModeKey(client: IMKTextInput) {
-        if SoftCapsLock.isOn {
-            SoftCapsLock.isOn = false
-            CandidatePanel.shared.presentTip("Caps Lock off", anchor: caretRect(client), duration: 0.9)
-        } else {
-            switchMode(client: client)
-        }
-    }
-
-    /// A long press turns Caps Lock on, from either language, and leaves the language English.
-    /// Pressed again while it is on, it turns it off.
-    private func toggleCapsLock(client: IMKTextInput) {
-        SoftCapsLock.isOn.toggle()
-        Log.ime.info("mode key long press: caps lock \(SoftCapsLock.isOn ? "on" : "off", privacy: .public)")
+    /// Shift + 中/英 turned Caps Lock on: English, in capitals, until it is turned off.
+    private func capsLockTurnedOn(client: IMKTextInput) {
         shiftEnglish = false
         if mode == .chinese {
             // What was typed so far stays, as letters.
@@ -266,8 +195,7 @@ final class TypelessInputController: IMKInputController {
             mode = .english
             applyKeyboard(client: client)
         }
-        CandidatePanel.shared.presentTip(
-            SoftCapsLock.isOn ? "Caps Lock on" : "Caps Lock off", anchor: caretRect(client), duration: 0.9)
+        CandidatePanel.shared.presentTip("Caps Lock on", anchor: caretRect(client), duration: 0.9)
     }
 
     /// Returns true when the mode changed.
@@ -275,9 +203,13 @@ final class TypelessInputController: IMKInputController {
     private func switchMode(client: IMKTextInput) -> Bool {
         if mode == .english {
             // No pinyin in a password field.
-            guard !SecureInput.isActive else { return false }
+            guard !SecureInput.isActive else {
+                Log.ime.info("switch refused: secure input")
+                return false
+            }
             // Rime is still compiling its dictionaries: stay in English rather than eat keys.
             guard engine.isReady, ensureSession() else {
+                Log.ime.info("switch refused: Rime \(String(describing: self.engine.state), privacy: .public)")
                 if engine.state == .deploying {
                     CandidatePanel.shared.presentTip("Deploying Rime…", anchor: caretRect(client))
                 }
@@ -288,6 +220,8 @@ final class TypelessInputController: IMKInputController {
             commitComposition(client)
         }
         mode.toggle()
+        Log.ime.info(
+            "mode now \(String(describing: self.mode), privacy: .public) in \(self.tag, privacy: .public), marked text \(self.hasMarkedText)")
         applyKeyboard(client: client)
         CandidatePanel.shared.presentTip(mode.announcement, anchor: caretRect(client), duration: 0.9)
         return true
@@ -296,7 +230,7 @@ final class TypelessInputController: IMKInputController {
     /// Pinyin needs raw US keys; English keeps whatever layout the user types on.
     private func applyKeyboard(client: IMKTextInput?) {
         client?.overrideKeyboard(
-            withKeyboardNamed: mode == .chinese ? KeyboardLayout.pinyinBase : KeyboardLayout.userASCIICapable)
+            withKeyboardNamed: mode == .chinese ? KeyboardLayout.pinyinBase : KeyboardLayout.english)
     }
 
     // MARK: - Voice
@@ -309,6 +243,10 @@ final class TypelessInputController: IMKInputController {
             // The menu may have changed the key since this field gained focus.
             if !pushToTalk.isDown, pushToTalk.key != VoiceSettings.pushToTalkKey {
                 pushToTalk = PushToTalkDetector(key: VoiceSettings.pushToTalkKey)
+            }
+            if event.keyCode == pushToTalk.key.keyCode {
+                Log.ime.info(
+                    "push-to-talk key event: flags 0x\(String(event.modifierFlags.rawValue, radix: 16), privacy: .public), was \(self.pushToTalk.isDown ? "down" : "up", privacy: .public)")
             }
             switch pushToTalk.flagsChanged(keyCode: event.keyCode, flags: event.modifierFlags) {
             case .press: beginVoice(client: client)
@@ -369,8 +307,42 @@ final class TypelessInputController: IMKInputController {
         VoiceStatus.phase = .listening
         VoiceHUD.shared.show(.listening, anchor: caretRect(client))
         session.start()
+        dictation = captureContext(client)
         // Load the polish model while the user talks, so it is ready at release.
         if VoiceSettings.polishEnabled { Task { await PolishEngine.shared.warmUp() } }
+    }
+
+    /// The text around the cursor, for the spacing and the polish model: this field's record of
+    /// what voice just wrote while the cursor has not moved, otherwise the field itself. Read
+    /// now, while the key is held and nothing can be typed, not after release while the user waits.
+    private func captureContext(_ client: IMKTextInput) -> DictationContext {
+        let style = AppStyle.forApp(client.bundleIdentifier())
+        let selection = client.selectedRange()
+        let caret = selection.location == NSNotFound ? nil : selection.location
+        let context = recent.context(style: style, currentCaret: caret) ?? readField(client, selection: selection, style: style)
+        Log.ime.info(
+            "voice context: \(context.source.rawValue, privacy: .public), \(context.before?.count ?? 0) before, \(context.after?.count ?? 0) after, style \(style.rawValue, privacy: .public)")
+        return context
+    }
+
+    /// What the app shares of the text on either side of the selection, which dictation replaces.
+    private func readField(_ client: IMKTextInput, selection: NSRange, style: AppStyle) -> DictationContext {
+        guard selection.location != NSNotFound else {
+            return DictationContext(style: style, before: nil, after: nil, source: .none)
+        }
+        let start = max(0, selection.location - DictationContext.beforeLimit)
+        let before = selection.location > start
+            ? client.attributedSubstring(from: NSRange(location: start, length: selection.location - start))?.string
+            : nil
+        let end = NSMaxRange(selection)
+        let total = client.length()
+        // Some apps report no length; then ask for the most and take what comes back.
+        let available = total == NSNotFound || total < end ? DictationContext.afterLimit : total - end
+        let after = available > 0
+            ? client.attributedSubstring(from: NSRange(location: end, length: min(available, DictationContext.afterLimit)))?.string
+            : nil
+        let source: DictationContext.Source = before == nil && after == nil ? .none : .field
+        return DictationContext(style: style, before: before, after: after, source: source)
     }
 
     private func endVoice(skipPolish: Bool) {
@@ -385,6 +357,7 @@ final class TypelessInputController: IMKInputController {
         if voice != nil { Log.ime.info("voice cancelled (another key, or focus moved)") }
         voice?.cancel()
         voice = nil
+        dictation = nil
         voiceReleased = false
         if let client { clearMarkedText(client) }
         setVoiceIdle()
@@ -406,7 +379,9 @@ final class TypelessInputController: IMKInputController {
     }
 
     private func commitVoice(_ text: String) {
+        let context = dictation
         voice = nil
+        dictation = nil
         voiceReleased = false
         setVoiceIdle()
         guard let client = self.client() else {
@@ -416,22 +391,22 @@ final class TypelessInputController: IMKInputController {
         Log.ime.info("voice final: \(text.count) characters, into \(client.bundleIdentifier() ?? "?", privacy: .public)")
         if text.isEmpty {
             clearMarkedText(client)
-        } else if VoiceSettings.polishEnabled, !skipPolish, PolishEngine.isInstalled {
-            beginPolish(raw: text, client: client)
+        } else if VoiceSettings.polishEnabled, !skipPolish, PolishEngine.isAvailable {
+            beginPolish(raw: text, context: context, client: client)
         } else {
-            insertVoiceText(text, client: client)
+            insertVoiceText(text, context: context, client: client)
         }
     }
 
     /// Keeps the raw transcript as marked text and asks the model for a cleaned version.
     /// Whatever happens, the raw text is what gets committed if the model has nothing better.
-    private func beginPolish(raw: String, client: IMKTextInput) {
-        let pending = PendingPolish(raw: raw)
+    private func beginPolish(raw: String, context: DictationContext?, client: IMKTextInput) {
+        let pending = PendingPolish(raw: raw, context: context)
         pendingPolish = pending
         VoiceStatus.phase = .polishing
         VoiceHUD.shared.show(.polishing, anchor: caretRect(client))
         Task {
-            let polished = await PolishEngine.shared.polish(raw, timeout: VoiceSettings.polishTimeout)
+            let polished = await PolishEngine.shared.polish(raw, context: context, timeout: PolishPrompt.timeout(for: raw))
             await MainActor.run { self.finishPolish(id: pending.id, polished: polished) }
         }
     }
@@ -442,18 +417,24 @@ final class TypelessInputController: IMKInputController {
         pendingPolish = nil
         setVoiceIdle()
         guard let client = self.client() else { return }
-        insertVoiceText(polished ?? pending.raw, client: client)
+        insertVoiceText(polished ?? pending.raw, context: pending.context, client: client)
     }
 
-    /// Inserting replaces the marked preview.
-    private func insertVoiceText(_ text: String, client: IMKTextInput) {
-        Log.ime.info("voice insert: \(text.count) characters")
-        client.insertText(text, replacementRange: Self.notFound)
+    /// Inserting replaces the marked preview. Text inside a sentence is fitted to it, spaces keep
+    /// it off its neighbours, and the field's record now ends with what was written.
+    private func insertVoiceText(_ text: String, context: DictationContext?, client: IMKTextInput) {
+        let fitted = SentenceJoin.fitted(text, before: context?.before, after: context?.after)
+        let padded = VoiceSpacing.padded(fitted, before: context?.before?.last, after: context?.after?.first)
+        Log.ime.info("voice insert: \(text.count) characters, \(padded.count - text.count) spaces added")
+        client.insertText(padded, replacementRange: Self.notFound)
         hasMarkedText = false
+        let caret = client.selectedRange().location
+        recent.record(padded, context: context, caretAfter: caret == NSNotFound ? nil : caret)
     }
 
     private func failVoice(_ error: VoiceError, recognition: Recognition) {
         voice = nil
+        dictation = nil
         voiceReleased = false
         setVoiceIdle()
         guard let client = self.client() else { return }

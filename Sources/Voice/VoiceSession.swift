@@ -67,6 +67,11 @@ final class VoiceSession {
     private var pipeline: Pipeline?
     private var setupTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
+    /// For the summary logged at the end: loudest meter reading and number of transcript updates.
+    private var peakLevel: Float = 0
+    private var updates = 0
+    private var setupFinished = false
+    private let startedAt = ContinuousClock.now
 
     init(recognition: Recognition, feed: AudioFeed = MicrophoneFeed(), finalizeTimeout: Duration = .seconds(3)) {
         self.recognition = recognition
@@ -110,10 +115,19 @@ final class VoiceSession {
     }
 
     /// The key was released: stop listening and deliver the final transcript.
+    ///
+    /// Released before setup finished, a live microphone has not started, so there is nothing to
+    /// wait for: an empty result is delivered at once. (Finalizing an analyzer that got no audio
+    /// hangs until `finalizeTimeout`, which kept the HUD up for three seconds after a quick tap.)
     func finish() {
         guard phase == .running else { return }
         finishRequested = true
-        if pipeline != nil { beginFinalizing() }
+        if pipeline != nil {
+            beginFinalizing()
+        } else if feed.isLive {
+            phase = .finishing
+            deliver()
+        }
     }
 
     /// Abandons the utterance without delivering anything.
@@ -136,7 +150,7 @@ final class VoiceSession {
                     throw VoiceError.unsupportedLocale(locale.identifier)
                 }
                 let transcriber = Self.makeTranscriber(locale: resolved)
-                guard await AssetInventory.status(forModules: [transcriber]) == .installed else {
+                guard await VoiceAssets.isInstalled(transcriber, locale: resolved) else {
                     throw VoiceError.assetsMissing(resolved.identifier)
                 }
                 transcribers.append(transcriber)
@@ -197,17 +211,20 @@ final class VoiceSession {
             return
         }
         self.pipeline = pipeline
+        setupFinished = true
         if finishRequested { beginFinalizing() }
     }
 
     private func deliverLevel(_ level: Float) {
         guard phase == .running else { return }
+        peakLevel = max(peakLevel, level)
         onLevel?(level)
     }
 
     private func apply(_ text: String, isFinal: Bool, confidence: (sum: Double, weight: Int)?, track: Int) {
         guard phase == .running || phase == .finishing else { return }
         tracks[track].apply(text, isFinal: isFinal, confidence: confidence)
+        updates += 1
         onText?(tracks[leadingTrack].text)
     }
 
@@ -231,7 +248,10 @@ final class VoiceSession {
         feed.stop()
         pipeline.input.finish()
 
-        let timeout = finalizeTimeout
+        // Nothing recognized yet: do not hold the HUD up for the full timeout. A real word shows
+        // a partial result within about 300 ms, so this only shortens a silent press.
+        let heardNothing = feed.isLive && tracks.allSatisfy { $0.text.isEmpty }
+        let timeout = heardNothing ? min(finalizeTimeout, .seconds(1)) : finalizeTimeout
         timeoutTask = Task {
             try? await Task.sleep(for: timeout)
             await MainActor.run { self.deliver() }
@@ -251,13 +271,23 @@ final class VoiceSession {
         guard phase == .finishing else { return }
         phase = .done
         teardown()
-        onFinish?(tracks[chooseWinner()].text.trimmingCharacters(in: .whitespacesAndNewlines))
+        let text = tracks[chooseWinner()].text.trimmingCharacters(in: .whitespacesAndNewlines)
+        logSummary("finished", characters: text.count)
+        onFinish?(text)
+    }
+
+    private func logSummary(_ outcome: String, characters: Int) {
+        let elapsed = startedAt.duration(to: .now)
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        Log.ime.info(
+            "voice summary: \(outcome, privacy: .public), setup \(self.setupFinished ? "done" : "not done", privacy: .public), peak level \(String(format: "%.2f", self.peakLevel), privacy: .public), \(self.updates) updates, \(characters) characters, \(String(format: "%.2f", seconds), privacy: .public)s")
     }
 
     private func fail(_ error: VoiceError) {
         guard phase != .done else { return }
         phase = .done
         teardown()
+        logSummary("failed: \(error.message)", characters: 0)
         onFailure?(error)
     }
 

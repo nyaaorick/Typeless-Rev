@@ -17,10 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A run that died inside the polish model leaves a marker; two in a row switch polishing off.
         PolishCrashGuard.shared.recoverFromPreviousRun()
         statusMenu.install()
-        // Timing the 中/英 key (tap or long press) needs Input Monitoring; ask once, up front.
-        if !ModeKeyMonitor.shared.start(), ModeKeyMonitor.permission == .notDetermined {
-            ModeKeyMonitor.requestAccess()
-        }
         RimeEngine.shared.start(.app)
         Log.app.info("input method server \(connectionName, privacy: .public) is up")
     }

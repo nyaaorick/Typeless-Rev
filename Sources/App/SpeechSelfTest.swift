@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// Headless check of the speech pipeline. Synthesizes a phrase with `say`, streams it
@@ -99,6 +100,19 @@ enum SpeechSelfTest {
             cancelled.cancel()
             _ = spin(timeout: 3) { spoke }
             check("\(tag): a cancelled session delivers nothing", !spoke)
+
+            // 5. Released before setup finishes (a quick tap): a live feed has captured nothing,
+            //    so the empty result comes at once instead of after the finalize timeout.
+            var tapped: String?
+            let tap = VoiceSession(locale: locale, feed: SilentLiveFeed())
+            tap.onFinish = { tapped = $0 }
+            let tapStarted = Date()
+            tap.start()
+            tap.finish()
+            _ = spin(timeout: 3) { tapped != nil }
+            let tapTime = Date().timeIntervalSince(tapStarted)
+            check("\(tag): a quick tap ends at once with no text", tapped == "" && tapTime < 0.5,
+                String(format: "%.2fs", tapTime))
         }
 
         // Auto-detect: both models listen to the same audio. The hint is deliberately wrong, to show
@@ -137,4 +151,12 @@ enum SpeechSelfTest {
         print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
         return failures == 0 ? 0 : 1
     }
+}
+
+/// A live feed that captures nothing: stands in for the microphone in the quick-tap check.
+private final class SilentLiveFeed: AudioFeed {
+    var onLevel: ((Float) -> Void)?
+    let isLive = true
+    func start(target: AVAudioFormat, yield: @escaping (AVAudioPCMBuffer) -> Void) async throws {}
+    func stop() {}
 }

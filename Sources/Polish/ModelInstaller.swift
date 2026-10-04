@@ -65,6 +65,8 @@ final class ModelInstaller {
     func remove() {
         guard task == nil else { return }
         Task { await PolishEngine.shared.unload() }
+        // A model installed later starts out like a fresh one, loading on first use.
+        VoiceSettings.setPolishOffloaded(false)
         try? FileManager.default.trashItem(at: AppPaths.modelDir, resultingItemURL: nil)
         set(Self.currentState())
     }

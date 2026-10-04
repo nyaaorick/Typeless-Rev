@@ -27,12 +27,20 @@ enum KeyTranslator {
     }
 
     /// Returns nil for keys librime has no use for, so the host app keeps them.
+    ///
+    /// With the keyboard layout overridden (pinyin always types on ABC), AppKit leaves Shift out of
+    /// `charactersIgnoringModifiers` for non-letter keys: Shift+/ arrives as "/". So while Shift is
+    /// the only modifier that changes the character, `characters` is used instead.
     static func keyDown(
         keyCode: UInt16,
-        charactersIgnoringModifiers characters: String?,
+        characters: String? = nil,
+        charactersIgnoringModifiers: String?,
         flags: NSEvent.ModifierFlags
     ) -> RimeKeyEvent? {
         let mask = modifierMask(flags)
+        let characters =
+            flags.contains(.shift) && flags.isDisjoint(with: [.control, .option]) && characters?.isEmpty == false
+            ? characters : charactersIgnoringModifiers
 
         if let keysym = specialKeys[keyCode] {
             return RimeKeyEvent(keycode: keysym, mask: mask)

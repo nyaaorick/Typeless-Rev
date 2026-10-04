@@ -18,6 +18,10 @@ mkdir -p "$DEST/Typeless-Rev.app"
 rsync -a --delete "$APP/" "$DEST/Typeless-Rev.app/"
 "$DEST/Typeless-Rev.app/Contents/MacOS/Typeless-Rev" --register
 
+# macOS relaunches an active input method as soon as it is killed, so the kill above can bring
+# the old binary straight back before the copy lands. Kill again now that the new one is in place.
+pkill -x Typeless-Rev 2>/dev/null || true
+
 echo
 echo "Installed. Typeless-Rev starts in English; press the 中/英 key (Caps Lock) to switch to Chinese pinyin."
 echo "It is listed under System Settings > Keyboard > Input Sources > English. If it is missing,"

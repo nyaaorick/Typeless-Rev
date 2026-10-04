@@ -178,11 +178,25 @@ enum SelfTest {
             engine.composition(fresh)?.candidates.map(\.text).contains("你好") == true)
         engine.destroySession(fresh)
 
-        // The mode key is Caps Lock; the input method must be able to set the lock both ways.
-        check("the input method can turn Caps Lock on", CapsLock.set(true) && CapsLock.isOn == true,
-            CapsLock.isOn.map { $0 ? "on" : "still off" } ?? "HID system unavailable")
-        check("the input method can turn Caps Lock off", CapsLock.clear() && CapsLock.isOn == false,
-            CapsLock.isOn.map { $0 ? "still on" : "off" } ?? "HID system unavailable")
+        // Shifted punctuation as AppKit really delivers it under the ABC override: the shift is
+        // missing from charactersIgnoringModifiers ("/"), present in characters ("?").
+        do {
+            let shifted = engine.createSession()
+            defer { engine.destroySession(shifted) }
+            var committed = ""
+            for character in "nihao" {
+                if let key = KeyTranslator.keyDown(keyCode: 0, charactersIgnoringModifiers: String(character), flags: []) {
+                    _ = engine.process(shifted, key: key)
+                }
+            }
+            for (code, base, typed) in [(UInt16(44), "/", "?"), (41, ";", ":"), (18, "1", "!")] {
+                let key = KeyTranslator.keyDown(
+                    keyCode: code, characters: typed, charactersIgnoringModifiers: base, flags: .shift)!
+                _ = engine.process(shifted, key: key)
+                if let out = engine.takeCommit(shifted) { committed += out }
+            }
+            check("Shift+/ ; 1 after nihao commit 你好?:!", committed == "你好?:!", committed)
+        }
 
         // Voice and pinyin are switched off while secure event input (a password field) is on.
         check("secure input is off to begin with", !SecureInput.isActive)

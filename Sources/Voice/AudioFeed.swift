@@ -5,6 +5,9 @@ import AVFoundation
 protocol AudioFeed: AnyObject {
     /// Meter position (0...1) of the audio being captured. Called on the audio thread.
     var onLevel: ((Float) -> Void)? { get set }
+    /// True when audio only exists once capture has started and while the user speaks (the
+    /// microphone); false when it is all there up front (a file).
+    var isLive: Bool { get }
 
     /// Starts delivering buffers in `target` format. Returns once capture is running
     /// (the microphone) or everything has been delivered (a file).
@@ -51,6 +54,7 @@ final class BufferConverter {
 /// Live microphone capture through `AVAudioEngine`.
 final class MicrophoneFeed: AudioFeed {
     var onLevel: ((Float) -> Void)?
+    let isLive = true
 
     private let engine = AVAudioEngine()
     private var tapInstalled = false
@@ -105,6 +109,7 @@ final class MicrophoneFeed: AudioFeed {
 /// Used by `--selftest-speech`; it needs no microphone permission.
 final class FileFeed: AudioFeed {
     var onLevel: ((Float) -> Void)?
+    let isLive = false
 
     private let url: URL
 

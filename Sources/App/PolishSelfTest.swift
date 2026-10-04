@@ -5,6 +5,41 @@ import Foundation
 /// reports timings and memory. Needs the model installed (`scripts/prepare-model.sh`).
 /// Run with `Typeless-Rev --selftest-polish`.
 enum PolishSelfTest {
+    /// `--polish-text`: what the polish step does with one transcript, as dictation would run it
+    /// (model already warm, production timeout for its length) and without a time limit, with the raw reply.
+    /// `before` stands in for the text already in the field, as `DictationContext` would carry it.
+    static func polishText(_ text: String, before: String? = nil, style: AppStyle = .plain) -> Int32 {
+        func wait<T>(_ work: @escaping () async -> T) -> (T, TimeInterval) {
+            var result: T?
+            let started = Date()
+            Task { result = await work() }
+            while result == nil { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02)) }
+            return (result!, Date().timeIntervalSince(started))
+        }
+        guard PolishEngine.isAvailable else {
+            print("the polish model is not installed or not available")
+            return 1
+        }
+        // Load the model first, as holding the key does while the user speaks.
+        let (_, load) = wait { await PolishEngine.shared.polishWithReply("hello", timeout: .seconds(120)) }
+        print(String(format: "model load and first reply: %.1fs", load))
+        let context = DictationContext(style: style, before: before, after: nil, source: before == nil ? .none : .field)
+        if let before { print("before the cursor:\n  \(before)") }
+        print("in (\(text.count) characters, \(style.rawValue) style):\n  \(text)")
+        let (live, liveTime) = wait {
+            await PolishEngine.shared.polishWithReply(text, context: context, timeout: PolishPrompt.timeout(for: text))
+        }
+        print(String(format: "\nwith the production timeout (%@), %.2fs:", "\(PolishPrompt.timeout(for: text))", liveTime))
+        print(live.reply == nil ? "  TIMED OUT: the raw transcript would be committed" : "  \(live.accepted ?? "REJECTED: the raw transcript would be committed")")
+        let (free, freeTime) = wait {
+            await PolishEngine.shared.polishWithReply(text, context: context, timeout: .seconds(120))
+        }
+        print(String(format: "\nwithout a time limit, %.2fs:", freeTime))
+        print("  reply:    \(free.reply ?? "none")")
+        print("  accepted: \(free.accepted ?? "no (rejected)")")
+        return 0
+    }
+
     static func run() -> Int32 {
         var failures = 0
         func check(_ name: String, _ ok: Bool, _ detail: String = "") {
@@ -79,7 +114,8 @@ enum PolishSelfTest {
         let (late, lateTime) = polish("hello world this is a timeout test", timeout: .milliseconds(1))
         check("a timeout falls back to nil quickly", late == nil && lateTime < 2, seconds(lateTime))
 
-        // Unloading frees the model; the next call loads it again.
+        // Unloading frees the model; the next call loads it again. The timed-out request above may
+        // still be generating when the unload comes, as a slow request would in use.
         let loadedMB = footprintMB()
         var unloaded = false
         Task {
@@ -87,7 +123,7 @@ enum PolishSelfTest {
             unloaded = true
         }
         spin(timeout: 10) { unloaded }
-        spin(timeout: 1.5) { false }  // the cache is cleared again half a second after the release
+        spin(timeout: 1.5) { false }  // the cache is cleared every half second after an unload
         let freedMB = footprintMB()
         check("unloading gives the model's memory back", freedMB >= 0 && freedMB < loadedMB / 2,
             "\(loadedMB) MB loaded, \(freedMB) MB after")

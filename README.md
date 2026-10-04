@@ -11,31 +11,24 @@ permission onboarding, password-field safety, profiling).
 ## Using it
 
 It starts in **English** and types exactly like the native keyboard: every key goes straight to the
-app. Press the **中/英 key** (the Caps Lock key; on a Mac sold in China, a tap of it) to switch to
+app. Press the **中/英 key** (the Caps Lock key) to switch to
 **Chinese pinyin**, and again to switch back. Each switch shows a short note ("Switch to Chinese
 mode" / "Switch to English mode"). Pinyin gives Chinese characters only; all punctuation is ASCII
 (`,` `.` `?` `!` are never `，` `。` `？` `！`). Every new focus starts in English again.
 
-The key has three states: Chinese, English, and English with Caps Lock.
-
-- A **tap** steps back one state. In Chinese it switches to English, even while the blue
-  composition box is showing (the pinyin typed so far stays as plain letters). In English it
-  switches to Chinese. With Caps Lock on it turns Caps Lock off and stays in English.
-- A **long press** (half a second) turns Caps Lock on, from either language, and leaves the
-  language on English. A long press while it is on turns it off.
+- **中/英 alone** only switches the language. In Chinese it switches to English even while the blue
+  composition box is showing (the pinyin typed so far stays as plain letters). It has no long press.
+- **Shift + 中/英** turns Caps Lock on: capitals, and the language becomes English (pinyin typed so
+  far stays as letters). Shift + 中/英 again, or 中/英 alone, turns it off; each change shows a
+  short tip. This Caps Lock belongs to the input method.
+- **The keyboard light means nothing.** The input method never touches the real lock, so the light
+  simply comes on and goes off with each press of the key. Letters still come out in the right
+  case: while the real lock is on, the input method types English letters itself.
 - **Holding Shift** types capitals as on the native keyboard. In Chinese mode a Shift-letter keeps
-  the pinyin typed so far as letters, and pinyin resumes when Shift is released. With Caps Lock on,
-  Shift gives lower case, as on macOS.
+  the pinyin typed so far as letters, and pinyin resumes when Shift is released. Shift with a
+  punctuation key types its shifted character (`?` `:` `"` `<` `>` …), ASCII as always.
 
-Telling a tap from a long press needs the **Input Monitoring** permission (System Settings >
-Privacy & Security; the input method asks once, and the menu shows its state). Without it every
-press is a tap: the key only switches language, there is no Caps Lock, and English letters are
-always lower case (Shift still gives capitals).
-
-This Caps Lock belongs to the input method: the keyboard light does not come on. The menu bar icon
-shows a Caps Lock symbol while it is on, and each change shows a short tip. It stays on across
-fields and apps until you turn it off. It does not apply in password fields, which macOS keeps away
-from input methods.
+No extra permission is needed for any of this.
 
 If your Mac is set to use Caps Lock to switch input sources (Keyboard > Input Sources), macOS
 handles the key before this input method sees it; turn that option off to use it for the mode.
@@ -105,7 +98,7 @@ runs one check, prints PASS/FAIL lines, and exits non-zero on failure:
 
 | Command | What it checks |
 | --- | --- |
-| `Typeless-Rev --selftest` | Embedded librime: deploy, typing, candidates, ASCII punctuation and Chinese-characters-only candidates, focus-loss flush, simplified output, upgrade from the first-release config, Caps Lock reset, secure-input detection, redeploy. |
+| `Typeless-Rev --selftest` | Embedded librime: deploy, typing, candidates, ASCII punctuation (including shifted keys as AppKit delivers them) and Chinese-characters-only candidates, focus-loss flush, simplified output, upgrade from the first-release config, Caps Lock reset, secure-input detection, redeploy. |
 | `Typeless-Rev --selftest-ui` | The menu bar menu (items, permission lines, settings, checkmarks, icon state), the polish crash-loop breaker, and the HUD (size, placement, show/hide). Restores your settings. |
 | `Typeless-Rev --selftest-speech` | Synthesized en-US and zh-CN speech through `VoiceSession`: transcript, live updates, cancel; then the auto-detecting path on English, Chinese and mixed phrases (with a deliberately wrong mode hint), printing each recognizer's confidence. Downloads the speech models on first run. |
 | `Typeless-Rev --selftest-polish` | The polish model: cold and warm latency, filler removal (zh, en), an injection attempt, the timeout, memory handed back after an unload, reload. Needs the model installed. |
@@ -134,12 +127,14 @@ list in [roadmap.md](roadmap.md) and the checklist in [SMOKE_TEST.md](SMOKE_TEST
   then the character), and no symbol, emoji, stroke or full-width candidates. The Traditional
   schema is not shipped.
 - **Modes.** English is a pass-through: the controller returns every key to the host and Rime
-  sees nothing. Rime's own ASCII switch, Shift toggle and Caps Lock handling are not used. A tap
-  and a long press of the 中/英 key are told apart by reading the key's down and up from the
-  keyboard itself (`ModeKeyMonitor`, IOHIDManager, Input Monitoring): on Apple keyboards the
-  system's "is it held" state follows the lock, not the finger. The real lock is never turned on: on this
-  keyboard the system reports the key as held while the lock is on, so a lock written by the input
-  method hides what the finger is doing. Caps Lock is the input method's own (`SoftCapsLock`). The
+  sees nothing. Rime's own ASCII switch, Shift toggle and Caps Lock handling are not used. The
+  中/英 key arrives as Caps Lock `flagsChanged` events, and all of its handling is in
+  `CapsLockGuard`: each event is one press (a duplicate within 100 ms is dropped), the real lock is
+  never written, and Caps Lock is the guard's own state. Writing the lock (clearing it after each
+  switch through IOHID) did not always reach the window server, so a later press arrived as no
+  event at all and had to be repeated (roadmap B5). Under the forced ABC
+  layout AppKit drops Shift from `charactersIgnoringModifiers` for punctuation keys (Shift+/ reads
+  as `/`), so `KeyTranslator` takes `characters` while Shift is the only modifier. The
   keyboard layout is forced to US ABC only in Chinese mode; English keeps your own layout.
 - **Keys.** Command shortcuts go to the host app. Modifier events are never swallowed.
 - **Focus loss.** Mid-composition focus loss inserts the typed letters, not a converted guess.
@@ -201,9 +196,19 @@ the hold cancels the dictation (the modifier was part of a shortcut), and so doe
 
 After you release the key, the transcript is cleaned up by a local LLM (punctuation, filler words,
 obvious misrecognitions) and committed. The raw transcript stays on screen as marked text until the
-polished text replaces it. If the model is missing, still loading, or slower than 3 seconds, the raw
-transcript is committed instead; typing a key while it waits commits the raw text at once. Hold
-**Shift** when you release the key to skip polishing for that utterance.
+polished text replaces it. If the model is missing, still loading, or too slow (3 seconds plus
+25 ms per character, at most 10 seconds), the raw transcript is committed instead; typing a key while
+it waits commits the raw text at once. Hold **Shift** when you release the key to skip polishing for
+that utterance.
+
+The model also sees up to 200 characters before the cursor and 20 after, to follow the topic and
+continue the sentence. It never rewrites them. Consecutive dictation reuses what was just dictated
+instead of reading the field again, so this works even in apps that do not share their text. The app
+picks the tone: casual in chat apps, full sentences in mail and documents, identifiers kept as
+spoken in editors and terminals. English text gets a space before it after a word, a period, or
+Chinese, and after it when an English word follows; text dictated mid-sentence keeps a lowercase
+first word and drops its closing period when the sentence goes on. None of the surrounding text is
+logged.
 
 - **Model.** `CaseD0rsett/Qwen3.8-4B-Distill-Heretic-Abliterated-MLX-4bit` (Apache 2.0, pinned
   revision), run in-process with `mlx-swift-lm`. No server and no network at inference time.
