@@ -28,17 +28,36 @@ actor PolishEngine {
     /// Bumped by `offload`, so a load it cancelled cannot report itself loaded afterwards.
     private var generation = 0
 
-    /// True when the text-only model has been installed (`scripts/prepare-model.sh`).
-    nonisolated static var isInstalled: Bool {
+    /// The model in memory (or loading), for the memory governor. Main thread only.
+    nonisolated(unsafe) private(set) static var loadedModel: PolishModel?
+    /// The model `loading` belongs to.
+    private var loadingModel: PolishModel?
+
+    /// True when the selected model has been installed (`scripts/prepare-model.sh`).
+    nonisolated static var isInstalled: Bool { isInstalled(PolishModel.current) }
+
+    nonisolated static func isInstalled(_ model: PolishModel) -> Bool {
         let fm = FileManager.default
         return ["config.json", "model.safetensors", "tokenizer.json"].allSatisfy {
-            fm.fileExists(atPath: AppPaths.modelDir.appendingPathComponent($0).path)
+            fm.fileExists(atPath: AppPaths.modelDir(for: model).appendingPathComponent($0).path)
         }
     }
 
-    /// True when the model can be used now or loaded on demand: installed and not offloaded.
+    /// The model to polish with under the current memory tier: the selected one; the 4B in place
+    /// of the 9B at tier 2; none at tier 3, or at tier 2 when the 4B is not installed.
+    nonisolated static var effectiveModel: PolishModel? {
+        switch MemoryGovernor.tier {
+        case 3...: return nil
+        case 2 where PolishModel.current == .qwen9b: return isInstalled(.qwen4b) ? .qwen4b : nil
+        default: return PolishModel.current
+        }
+    }
+
+    /// True when a model can be used now or loaded on demand: installed, not offloaded, and allowed
+    /// by the memory tier.
     nonisolated static var isAvailable: Bool {
-        isInstalled && !VoiceSettings.polishOffloaded
+        guard let model = effectiveModel else { return false }
+        return isInstalled(model) && !VoiceSettings.polishOffloaded
     }
 
     // MARK: - Public
@@ -106,8 +125,9 @@ actor PolishEngine {
         generation += 1
         loading?.cancel()
         loading = nil
+        loadingModel = nil
         releaseCache()
-        publish(.offloaded)
+        publish(.offloaded, model: nil)
         Log.polish.info("polish model unloaded")
     }
 
@@ -129,18 +149,29 @@ actor PolishEngine {
     }
 
     /// In call order: the main queue is first in, first out.
-    private nonisolated func publish(_ residency: Residency) {
-        DispatchQueue.main.async { Self.residency = residency }
+    private nonisolated func publish(_ residency: Residency, model: PolishModel?) {
+        DispatchQueue.main.async {
+            Self.loadedModel = model
+            Self.residency = residency
+        }
     }
 
     // MARK: - Loading and generation
 
     private func container() -> Task<ModelContainer, Error> {
-        if let loading { return loading }
-        let directory = AppPaths.modelDir
+        let model = Self.effectiveModel ?? PolishModel.current
+        if let loading, loadingModel == model { return loading }
+        // Another model is in memory (the tier changed): only one is ever loaded.
+        if loading != nil { unload() }
+        guard MemoryGovernor.canLoad(bytes: model.memoryBytes) else {
+            Log.polish.info("polish model \(model.rawValue, privacy: .public) not loaded: memory is low")
+            return Task { throw PolishLoadError.lowMemory }
+        }
+        let directory = AppPaths.modelDir(for: model)
         let generation = generation
         MLX.Memory.cacheLimit = Self.cacheLimit
-        publish(.loading)
+        loadingModel = model
+        publish(.loading, model: model)
         let task = Task {
             let started = Date()
             PolishCrashGuard.shared.begin()
@@ -180,9 +211,16 @@ actor PolishEngine {
     /// forgotten, so the next use tries again.
     private func loaded(generation: Int, succeeded: Bool) {
         guard generation == self.generation else { return }
-        if !succeeded { loading = nil }
-        publish(succeeded ? .loaded : .offloaded)
+        if !succeeded {
+            loading = nil
+            loadingModel = nil
+        }
+        publish(succeeded ? .loaded : .offloaded, model: succeeded ? loadingModel : nil)
     }
+}
+
+enum PolishLoadError: Error {
+    case lowMemory
 }
 
 extension Notification.Name {

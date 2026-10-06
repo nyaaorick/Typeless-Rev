@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         PolishCrashGuard.shared.recoverFromPreviousRun()
         statusMenu.install()
         RimeEngine.shared.start(.app)
+        MemoryGovernor.shared.start()
         Log.app.info("input method server \(connectionName, privacy: .public) is up")
     }
 

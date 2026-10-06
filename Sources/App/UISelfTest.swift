@@ -32,7 +32,8 @@ enum UISelfTest {
         let titles = status.menu.items.filter { !$0.isSeparatorItem }.map(\.title)
         print("      menu: \(titles.joined(separator: " | "))")
         for expected in ["Ready", "Polish with Local LLM", "Speech Language", "Push-to-Talk Key", "English Keyboard Layout",
-            "Open Rime Folder", "Redeploy Rime", "About Typeless-Rev", "Quit Typeless-Rev"] {
+            "Auto-Downgrade Under Memory Pressure", "Open Rime Folder", "Redeploy Rime", "About Typeless-Rev",
+            "Quit Typeless-Rev"] {
             check("menu has \"\(expected)\"", titles.contains(expected))
         }
         check("menu has a microphone entry", titles.contains { $0.hasPrefix("Microphone:") })

@@ -64,7 +64,10 @@ actor WhisperEngine {
     nonisolated static var isAvailable: Bool { isInstalled && !VoiceSettings.whisperOffloaded }
 
     /// True when the next utterance can use Whisper. Main thread only.
-    nonisolated static var isReady: Bool { residency == .loaded && isAvailable }
+    nonisolated static var isReady: Bool { residency == .loaded && isAvailable && MemoryGovernor.tier == 0 }
+
+    /// Memory it takes once loaded, for the pre-load check.
+    static let memoryBytes: Int64 = 1_200_000_000
 
     /// Downloads into a staging folder and swaps it in last, so a half-done install is never seen.
     func startInstall() {
@@ -158,7 +161,11 @@ actor WhisperEngine {
 
     /// Starts loading in the background, so a later key press can use it.
     func warmUp() {
-        guard Self.isAvailable, kit == nil else { return }
+        guard Self.isAvailable, kit == nil, MemoryGovernor.tier == 0 else { return }
+        guard loading != nil || MemoryGovernor.canLoad(bytes: Self.memoryBytes) else {
+            Log.whisper.info("whisper not loaded: memory is low")
+            return
+        }
         _ = loadTask()
     }
 

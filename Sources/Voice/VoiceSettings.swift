@@ -23,6 +23,7 @@ enum VoiceSettings {
     static let polishOffloadedKey = "polishOffloaded"
     static let speechEngineKey = "speechEngine"
     static let polishModelKey = "polishModel"
+    static let autoDowngradeKey = "autoDowngrade"
     static let whisperOffloadedKey = "whisperOffloaded"
 
     /// Whether the transcript is polished by the local LLM. Defaults to on.
@@ -118,6 +119,15 @@ enum VoiceSettings {
 
     static func setPolishModel(_ model: PolishModel) {
         UserDefaults.standard.set(model.rawValue, forKey: polishModelKey)
+    }
+
+    /// Whether models step down on their own under memory pressure (`MemoryGovernor`). On by default.
+    static var autoDowngrade: Bool {
+        UserDefaults.standard.object(forKey: autoDowngradeKey) as? Bool ?? true
+    }
+
+    static func setAutoDowngrade(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: autoDowngradeKey)
     }
 
     static var pushToTalkKey: PushToTalkKey {

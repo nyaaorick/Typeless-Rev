@@ -323,7 +323,8 @@ final class TypelessInputController: IMKInputController {
         guard WhisperEngine.isReady else {
             let reason =
                 !WhisperEngine.isInstalled ? "not installed"
-                : VoiceSettings.whisperOffloaded ? "offloaded" : "not loaded yet"
+                : VoiceSettings.whisperOffloaded ? "offloaded"
+                : MemoryGovernor.tier > 0 ? "paused by memory pressure" : "not loaded yet"
             Log.ime.info("voice engine: apple, whisper \(reason, privacy: .public)")
             Task { await WhisperEngine.shared.warmUp() }
             return nil

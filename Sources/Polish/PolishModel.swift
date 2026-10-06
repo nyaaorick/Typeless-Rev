@@ -76,6 +76,14 @@ enum PolishModel: String, CaseIterable {
         }
     }
 
+    /// Memory it takes once loaded (measured by `--selftest-polish`), for the pre-load check.
+    var memoryBytes: Int64 {
+        switch self {
+        case .qwen4b: 3_000_000_000
+        case .qwen9b: 5_300_000_000
+        }
+    }
+
     /// How much longer than the 4B it takes to answer.
     var timeoutScale: Double {
         switch self {

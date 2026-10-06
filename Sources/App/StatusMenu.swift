@@ -28,6 +28,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             self, selector: #selector(modelChanged), name: .polishResidencyChanged, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(whisperChanged), name: .whisperChanged, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(modelChanged), name: .memoryTierChanged, object: nil)
         engine.onStateChange = { [weak self] _ in self?.stateChanged() }
         installer.onChange = { [weak self] in
             self?.stateChanged()
@@ -83,7 +85,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         if VoiceSettings.polishDisabledByCrash {
             add("Polish was turned off after repeated crashes", enabled: false)
         }
-        if VoiceSettings.speechEngine == .whisper, let reason = whisperFallbackReason() {
+        if let note = memoryNote() {
+            add(note, enabled: false)
+        } else if VoiceSettings.speechEngine == .whisper, let reason = whisperFallbackReason() {
             add("Using Apple Speech: Whisper \(reason)", enabled: false)
         }
 
@@ -155,6 +159,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         whisper.submenu = whisperSubmenu()
         menu.addItem(whisper)
         whisperItem = whisper
+
+        let downgrade = add("Auto-Downgrade Under Memory Pressure", #selector(toggleAutoDowngrade))
+        downgrade.state = VoiceSettings.autoDowngrade ? .on : .off
 
         menu.addItem(.separator())
         add("Open Rime Folder", #selector(openRimeFolder))
@@ -288,6 +295,27 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             item("Try Again", #selector(downloadModel))
         }
         return submenu
+    }
+
+    // MARK: - Memory pressure
+
+    /// What memory pressure has switched off right now, or nil when nothing.
+    private func memoryNote() -> String? {
+        let tier = MemoryGovernor.tier
+        guard tier > 0 else { return nil }
+        var paused: [String] = []
+        if VoiceSettings.speechEngine == .whisper { paused.append("Whisper paused") }
+        if tier == 3 || (tier == 2 && PolishEngine.effectiveModel == nil) {
+            if VoiceSettings.polishEnabled { paused.append("polish paused") }
+        } else if tier == 2, PolishModel.current == .qwen9b {
+            paused.append("polishing with 4B")
+        }
+        return "Memory pressure: " + (paused.isEmpty ? "models stepped down" : paused.joined(separator: ", "))
+    }
+
+    @objc private func toggleAutoDowngrade() {
+        VoiceSettings.setAutoDowngrade(!VoiceSettings.autoDowngrade)
+        MemoryGovernor.shared.settingChanged()
     }
 
     // MARK: - Whisper model
