@@ -21,6 +21,9 @@ enum VoiceSettings {
     static let polishCrashesKey = "polishCrashes"
     static let polishDisabledByCrashKey = "polishDisabledByCrash"
     static let polishOffloadedKey = "polishOffloaded"
+    static let speechEngineKey = "speechEngine"
+    static let polishModelKey = "polishModel"
+    static let whisperOffloadedKey = "whisperOffloaded"
 
     /// Whether the transcript is polished by the local LLM. Defaults to on.
     static var polishEnabled: Bool {
@@ -76,6 +79,45 @@ enum VoiceSettings {
 
     static func setPolishOffloaded(_ offloaded: Bool) {
         UserDefaults.standard.set(offloaded, forKey: polishOffloadedKey)
+    }
+
+    /// Which recognizer writes the final text. Apple's always runs too: it shows the live text and
+    /// stands in whenever Whisper is not loaded or fails.
+    enum SpeechEngine: String, CaseIterable {
+        case apple, whisper
+
+        var title: String {
+            switch self {
+            case .apple: "Apple Speech"
+            case .whisper: "Whisper (large-v3-turbo)"
+            }
+        }
+    }
+
+    static var speechEngine: SpeechEngine {
+        UserDefaults.standard.string(forKey: speechEngineKey).flatMap(SpeechEngine.init(rawValue:)) ?? .apple
+    }
+
+    static func setSpeechEngine(_ engine: SpeechEngine) {
+        UserDefaults.standard.set(engine.rawValue, forKey: speechEngineKey)
+    }
+
+    /// True after the menu's Offload: the Whisper model stays on disk, out of memory, until Load.
+    static var whisperOffloaded: Bool {
+        UserDefaults.standard.bool(forKey: whisperOffloadedKey)
+    }
+
+    static func setWhisperOffloaded(_ offloaded: Bool) {
+        UserDefaults.standard.set(offloaded, forKey: whisperOffloadedKey)
+    }
+
+    /// The polish model in use: only this one is installed into, loaded, and offloaded.
+    static var polishModel: PolishModel {
+        UserDefaults.standard.string(forKey: polishModelKey).flatMap(PolishModel.init(rawValue:)) ?? .qwen4b
+    }
+
+    static func setPolishModel(_ model: PolishModel) {
+        UserDefaults.standard.set(model.rawValue, forKey: polishModelKey)
     }
 
     static var pushToTalkKey: PushToTalkKey {

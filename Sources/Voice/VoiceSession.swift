@@ -22,6 +22,15 @@ enum Recognition {
     }
 }
 
+/// Asks Whisper for the final text of an utterance. Apple's recognizer still runs: it shows the
+/// live text, and its final text stands whenever Whisper has nothing.
+struct WhisperRequest {
+    /// The words to expect (`WhisperText.prompt`).
+    let prompt: String?
+    /// An ISO code such as "en", or nil to let Whisper detect the language.
+    let language: String?
+}
+
 /// One push-to-talk utterance: audio in, live transcript out.
 ///
 /// A new session is made for every utterance and never reused, so a callback can
@@ -50,11 +59,18 @@ final class VoiceSession {
     var onLevel: ((Float) -> Void)?
 
     private let recognition: Recognition
+    /// Words to expect (`VocabularyHints`), handed to the analyzer as contextual strings.
+    private let hints: [String]
+    private let whisper: WhisperRequest?
+    /// The audio Whisper transcribes at the end, recorded while Apple's recognizer listens.
+    private let recorder: SampleRecorder?
     private let feed: AudioFeed
     /// How long to wait for the recognizer to finalize before using what we have.
     private let finalizeTimeout: Duration
 
     private var phase = Phase.idle
+    /// Set by `cancel()`: a Whisper answer still on its way is then dropped.
+    private var cancelled = false
     /// One per locale in `recognition.locales`; each hears the same audio.
     private var tracks: [RecognitionTrack]
     /// The language the transcript was taken from, once an auto-detecting utterance is delivered.
@@ -73,8 +89,20 @@ final class VoiceSession {
     private var setupFinished = false
     private let startedAt = ContinuousClock.now
 
-    init(recognition: Recognition, feed: AudioFeed = MicrophoneFeed(), finalizeTimeout: Duration = .seconds(3)) {
+    init(
+        recognition: Recognition, hints: [String] = [], whisper: WhisperRequest? = nil,
+        feed: AudioFeed = MicrophoneFeed(), finalizeTimeout: Duration = .seconds(3)
+    ) {
         self.recognition = recognition
+        self.hints = hints
+        self.whisper = whisper
+        if whisper != nil, let microphone = feed as? MicrophoneFeed {
+            let recorder = SampleRecorder()
+            microphone.recorder = recorder
+            self.recorder = recorder
+        } else {
+            self.recorder = nil
+        }
         self.tracks = Array(repeating: RecognitionTrack(), count: recognition.locales.count)
         self.feed = feed
         self.finalizeTimeout = finalizeTimeout
@@ -132,6 +160,7 @@ final class VoiceSession {
 
     /// Abandons the utterance without delivering anything.
     func cancel() {
+        cancelled = true
         guard phase != .done else { return }
         phase = .done
         teardown()
@@ -160,6 +189,16 @@ final class VoiceSession {
             }
 
             let newAnalyzer = SpeechAnalyzer(modules: transcribers)
+            if !hints.isEmpty {
+                // Only a bias toward these words: recognition works without them, so a failure is not fatal.
+                let context = AnalysisContext()
+                context.contextualStrings[.general] = hints
+                do {
+                    try await newAnalyzer.setContext(context)
+                } catch {
+                    Log.ime.error("voice hints not applied: \(error.localizedDescription, privacy: .public)")
+                }
+            }
             let (stream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
             analyzer = newAnalyzer
             input = continuation
@@ -273,7 +312,25 @@ final class VoiceSession {
         teardown()
         let text = tracks[chooseWinner()].text.trimmingCharacters(in: .whitespacesAndNewlines)
         logSummary("finished", characters: text.count)
-        onFinish?(text)
+        guard let whisper, let samples = recorder?.recorded,
+            Double(samples.count) / 16_000 >= WhisperText.minimumSeconds, !WhisperText.isSilent(samples)
+        else {
+            onFinish?(text)
+            return
+        }
+        // Whisper writes the final text when it can; Apple's stands when it cannot.
+        let seconds = Double(samples.count) / 16_000
+        let timeout = Duration.milliseconds(min(8_000, 2_000 + Int(seconds * 150)))
+        Task {
+            let better = await WhisperEngine.shared.transcribe(
+                samples, prompt: whisper.prompt, language: whisper.language, timeout: timeout)
+            await MainActor.run {
+                guard !self.cancelled else { return }
+                Log.ime.info(
+                    "voice engine: \(better == nil ? "apple (whisper had nothing)" : "whisper", privacy: .public), apple \(text.count) characters, whisper \(better?.count ?? 0)")
+                self.onFinish?(better ?? text)
+            }
+        }
     }
 
     private func logSummary(_ outcome: String, characters: Int) {

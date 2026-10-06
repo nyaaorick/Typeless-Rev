@@ -286,7 +286,11 @@ final class TypelessInputController: IMKInputController {
         }
         // The mode is only a tie-breaker: speech in either language works in either mode.
         let recognition = VoiceSettings.recognition(hint: mode == .chinese ? .chinese : .english)
-        let session = VoiceSession(recognition: recognition)
+        // Read the field first: its words prime the recognizer as well as the polish model.
+        let context = captureContext(client)
+        dictation = context
+        let hints = VocabularyHints.terms(before: context.before, style: context.style)
+        let session = VoiceSession(recognition: recognition, hints: hints, whisper: whisperRequest(context, hints: hints))
         session.onText = { [weak self, weak session] text in
             guard let self, let session, self.voice === session else { return }
             self.showVoiceText(text)
@@ -303,13 +307,30 @@ final class TypelessInputController: IMKInputController {
         voice = session
         voiceReleased = false
         skipPolish = false
-        Log.ime.info("voice start in \(client.bundleIdentifier() ?? "?", privacy: .public)")
+        Log.ime.info(
+            "voice start in \(client.bundleIdentifier() ?? "?", privacy: .public), \(hints.count) hint terms")
         VoiceStatus.phase = .listening
         VoiceHUD.shared.show(.listening, anchor: caretRect(client))
         session.start()
-        dictation = captureContext(client)
         // Load the polish model while the user talks, so it is ready at release.
         if VoiceSettings.polishEnabled { Task { await PolishEngine.shared.warmUp() } }
+    }
+
+    /// What to ask Whisper, when it is the chosen engine and loaded. Otherwise Apple's text is final;
+    /// a Whisper that is chosen but not loaded starts loading for the next utterance.
+    private func whisperRequest(_ context: DictationContext, hints: [String]) -> WhisperRequest? {
+        guard VoiceSettings.speechEngine == .whisper else { return nil }
+        guard WhisperEngine.isReady else {
+            let reason =
+                !WhisperEngine.isInstalled ? "not installed"
+                : VoiceSettings.whisperOffloaded ? "offloaded" : "not loaded yet"
+            Log.ime.info("voice engine: apple, whisper \(reason, privacy: .public)")
+            Task { await WhisperEngine.shared.warmUp() }
+            return nil
+        }
+        return WhisperRequest(
+            prompt: WhisperText.prompt(before: context.before, hints: hints),
+            language: WhisperText.language(for: VoiceSettings.localeIdentifier, autoDetect: VoiceSettings.autoDetect))
     }
 
     /// The text around the cursor, for the spacing and the polish model: this field's record of
@@ -406,7 +427,7 @@ final class TypelessInputController: IMKInputController {
         VoiceStatus.phase = .polishing
         VoiceHUD.shared.show(.polishing, anchor: caretRect(client))
         Task {
-            let polished = await PolishEngine.shared.polish(raw, context: context, timeout: PolishPrompt.timeout(for: raw))
+            let polished = await PolishEngine.shared.polish(raw, context: context, timeout: PolishPrompt.timeout(for: raw, scale: PolishModel.current.timeoutScale))
             await MainActor.run { self.finishPolish(id: pending.id, polished: polished) }
         }
     }

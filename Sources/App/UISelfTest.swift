@@ -37,7 +37,10 @@ enum UISelfTest {
         }
         check("menu has a microphone entry", titles.contains { $0.hasPrefix("Microphone:") })
         check("menu has a speech data entry", titles.contains { $0.hasPrefix("Speech Data:") })
-        check("menu has a polish model entry", titles.contains { $0.hasPrefix("Polish Model:") })
+        check("menu has a polish model entry", titles.contains { $0.hasPrefix("Polish Model ") })
+        check("menu has a Whisper model entry", titles.contains { $0.hasPrefix("Whisper Model:") })
+        let engines = status.menu.items.first { $0.title == "Speech Engine" }?.submenu?.items.map(\.title) ?? []
+        check("speech engine offers Apple and Whisper", engines == VoiceSettings.SpeechEngine.allCases.map(\.title))
         check("actions are enabled", status.menu.items.filter { $0.action != nil && $0.title != "Redeploy Rime" }
             .allSatisfy(\.isEnabled))
         check("Redeploy is off until Rime is running", status.menu.items.first { $0.title == "Redeploy Rime" }?.isEnabled == false)

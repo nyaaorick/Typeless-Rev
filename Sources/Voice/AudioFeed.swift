@@ -51,10 +51,29 @@ final class BufferConverter {
     }
 }
 
+/// A 16 kHz mono copy of what the microphone hears, for Whisper. Appended on the audio thread.
+final class SampleRecorder: @unchecked Sendable {
+    static let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+
+    private let lock = NSLock()
+    private var samples: [Float] = []
+    private let converter = BufferConverter(target: SampleRecorder.format)
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        guard let converted = converter.convert(buffer), let data = converted.floatChannelData?[0] else { return }
+        let chunk = UnsafeBufferPointer(start: data, count: Int(converted.frameLength))
+        lock.withLock { samples.append(contentsOf: chunk) }
+    }
+
+    var recorded: [Float] { lock.withLock { samples } }
+}
+
 /// Live microphone capture through `AVAudioEngine`.
 final class MicrophoneFeed: AudioFeed {
     var onLevel: ((Float) -> Void)?
     let isLive = true
+    /// Also gets every buffer, when set before `start`.
+    var recorder: SampleRecorder?
 
     private let engine = AVAudioEngine()
     private var tapInstalled = false
@@ -67,7 +86,9 @@ final class MicrophoneFeed: AudioFeed {
         guard format.sampleRate > 0, format.channelCount > 0 else { throw VoiceError.noInputDevice }
 
         let converter = BufferConverter(target: target)
+        let recorder = recorder
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+            recorder?.append(buffer)
             if let channel = buffer.floatChannelData?[0] {
                 let rms = AudioLevel.rms(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
                 self?.onLevel?(AudioLevel.meter(rms: rms))

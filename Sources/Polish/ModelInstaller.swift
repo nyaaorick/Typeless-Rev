@@ -1,8 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// Installs the polish model: downloads the pinned checkpoint from Hugging Face, checks it
-/// against the pinned SHA-256, and writes a text-only copy without the vision tower.
+/// Installs the selected polish model (`PolishModel.current`): downloads the pinned checkpoint from
+/// Hugging Face, checks it against the pinned SHA-256, and writes a text-only copy without the
+/// vision tower where the download has one.
 ///
 /// Everything happens in a staging directory next to the final one and is swapped in last,
 /// so `PolishEngine.isInstalled` never sees a half-installed model. State is read and the
@@ -19,22 +20,6 @@ final class ModelInstaller {
         case failed(String)
     }
 
-    /// The community conversion we ship against, pinned so the files never change under us.
-    static let repo = "CaseD0rsett/Qwen3.8-4B-Distill-Heretic-Abliterated-MLX-4bit"
-    static let revision = "012db115605dab31b813f8c01a00ea09bf27846f"
-    private static let pinned: [(name: String, sha256: String?)] = [
-        ("config.json", nil),
-        ("generation_config.json", nil),
-        ("tokenizer_config.json", nil),
-        ("chat_template.jinja", nil),
-        ("tokenizer.json", "6f32ce20dc35f57a7f9ad1eac03525bd7d30f9df8cea6507e958279cc3657706"),
-    ]
-    private static let weights = (
-        name: "model.safetensors", sha256: "ce5a70fa86c09f709a662c656e5a171bacc2aac2c5e4717d96336ff10cf7c000"
-    )
-    /// The download (3.03 GB) and the text-only copy (2.37 GB) exist side by side for a moment.
-    private static let requiredFreeBytes: Int64 = 6_000_000_000
-
     private(set) var state: State = ModelInstaller.currentState()
     var onChange: (() -> Void)?
 
@@ -47,8 +32,9 @@ final class ModelInstaller {
 
     func install() {
         guard task == nil, !PolishEngine.isInstalled else { return }
+        let model = PolishModel.current
         task = Task { [self] in
-            await run()
+            await run(model)
             await MainActor.run {
                 task = nil
                 download = nil
@@ -59,6 +45,12 @@ final class ModelInstaller {
     func cancel() {
         task?.cancel()
         download?.cancel()
+    }
+
+    /// Re-reads the state after the selected model changed.
+    func refresh() {
+        guard task == nil else { return }
+        set(Self.currentState())
     }
 
     /// Moves the model to the Trash, so removing it is undoable.
@@ -73,26 +65,27 @@ final class ModelInstaller {
 
     static func currentState() -> State {
         guard PolishEngine.isInstalled else { return .notInstalled }
-        let size = (try? AppPaths.modelDir.appendingPathComponent(weights.name).resourceValues(forKeys: [.fileSizeKey]))?
+        let size = (try? AppPaths.modelDir.appendingPathComponent(PolishModel.current.weights.name)
+            .resourceValues(forKeys: [.fileSizeKey]))?
             .fileSize
         return .installed(bytes: Int64(size ?? 0))
     }
 
     // MARK: - Install
 
-    private func run() async {
+    private func run(_ model: PolishModel) async {
         let fm = FileManager.default
-        let finalDir = AppPaths.modelDir
-        let staging = finalDir.deletingLastPathComponent().appendingPathComponent("polish.installing")
+        let finalDir = AppPaths.modelDir(for: model)
+        let staging = finalDir.deletingLastPathComponent().appendingPathComponent("\(model.folderName).installing")
         defer { try? fm.removeItem(at: staging) }
         do {
-            try Self.requireFreeSpace(near: finalDir.deletingLastPathComponent())
+            try Self.requireFreeSpace(model.requiredFreeBytes, near: finalDir.deletingLastPathComponent())
             try? fm.removeItem(at: staging)
             try fm.createDirectory(at: staging, withIntermediateDirectories: true)
 
             set(.downloading(fraction: 0))
-            for file in Self.pinned {
-                let data = try await Self.fetch(file.name)
+            for file in model.files {
+                let data = try await Self.fetch(file.name, of: model)
                 if let expected = file.sha256, SHA256.hash(data: data).hex != expected { throw Failure.checksum(file.name) }
                 let out = staging.appendingPathComponent(file.name)
                 try (file.name == "config.json" ? try Self.withoutVision(data) : data).write(to: out)
@@ -101,17 +94,23 @@ final class ModelInstaller {
             let downloaded = staging.appendingPathComponent("download.partial")
             let transfer = FileDownload { [weak self] fraction in self?.set(.downloading(fraction: fraction)) }
             await MainActor.run { download = transfer }
-            try await transfer.run(url: Self.url(for: Self.weights.name), to: downloaded)
+            let weights = model.weights
+            try await transfer.run(url: Self.url(for: weights.name, of: model), to: downloaded)
 
             set(.preparing)
+            let target = staging.appendingPathComponent(weights.name)
             try await Task.detached {
-                guard try Self.sha256(of: downloaded) == Self.weights.sha256 else { throw Failure.checksum(Self.weights.name) }
-                let result = try SafetensorsFilter.copy(
-                    from: downloaded, to: staging.appendingPathComponent(Self.weights.name), dropping: Self.isVision)
-                Log.polish.info("installed \(result.kept) tensors, dropped \(result.dropped) vision tensors")
+                guard try Self.sha256(of: downloaded) == weights.sha256 else { throw Failure.checksum(weights.name) }
+                if model.hasVision {
+                    let result = try SafetensorsFilter.copy(from: downloaded, to: target, dropping: Self.isVision)
+                    try FileManager.default.removeItem(at: downloaded)
+                    Log.polish.info("installed \(result.kept) tensors, dropped \(result.dropped) vision tensors")
+                } else {
+                    // Already text-only: use the download as it is, no second copy.
+                    try FileManager.default.moveItem(at: downloaded, to: target)
+                }
             }.value
-            try fm.removeItem(at: downloaded)
-            try "\(Self.repo)@\(Self.revision)\n".write(
+            try "\(model.repo)@\(model.revision)\n".write(
                 to: staging.appendingPathComponent("REVISION"), atomically: true, encoding: .utf8)
 
             try Task.checkCancellation()
@@ -145,7 +144,9 @@ final class ModelInstaller {
 
         var message: String {
             switch self {
-            case .notEnoughSpace: return "Not enough free disk space (6 GB needed while installing)."
+            case .notEnoughSpace:
+                let gigabytes = Double(PolishModel.current.requiredFreeBytes) / 1e9
+                return String(format: "Not enough free disk space (%.1f GB needed while installing).", gigabytes)
             case .checksum(let file): return "The downloaded \(file) is corrupt. Try again."
             case .http(let code): return "The download server answered \(code)."
             }
@@ -157,12 +158,12 @@ final class ModelInstaller {
         ["vision_tower", "model.visual", "visual."].contains { name.hasPrefix($0) }
     }
 
-    private static func url(for file: String) -> URL {
-        URL(string: "https://huggingface.co/\(repo)/resolve/\(revision)/\(file)")!
+    private static func url(for file: String, of model: PolishModel) -> URL {
+        URL(string: "https://huggingface.co/\(model.repo)/resolve/\(model.revision)/\(file)")!
     }
 
-    private static func fetch(_ file: String) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(from: url(for: file))
+    private static func fetch(_ file: String, of model: PolishModel) async throws -> Data {
+        let (data, response) = try await URLSession.shared.data(from: url(for: file, of: model))
         if let status = (response as? HTTPURLResponse)?.statusCode, !(200..<300).contains(status) {
             throw Failure.http(status)
         }
@@ -176,7 +177,7 @@ final class ModelInstaller {
         return try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
     }
 
-    private static func requireFreeSpace(near directory: URL) throws {
+    private static func requireFreeSpace(_ requiredFreeBytes: Int64, near directory: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         let free = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])

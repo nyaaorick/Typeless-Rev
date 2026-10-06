@@ -88,6 +88,19 @@ actor PolishEngine {
         return (reply, accepted)
     }
 
+    /// Selects another model. Only one is ever in memory: the current one is unloaded first, and
+    /// the new one loads at the next key press or the menu's Load.
+    func switchModel(to model: PolishModel) {
+        guard model != PolishModel.current else { return }
+        unload()
+        VoiceSettings.setPolishModel(model)
+        Log.polish.info("polish model switched to \(model.rawValue, privacy: .public)")
+    }
+
+    /// Freed buffers MLX may keep for reuse. Without a cap it parks up to the whole model's worth;
+    /// a short reply needs little, so everything above this goes back to the system at once.
+    private static let cacheLimit = 256 << 20
+
     /// Releases the model and its GPU cache.
     func unload() {
         generation += 1
@@ -126,6 +139,7 @@ actor PolishEngine {
         if let loading { return loading }
         let directory = AppPaths.modelDir
         let generation = generation
+        MLX.Memory.cacheLimit = Self.cacheLimit
         publish(.loading)
         let task = Task {
             let started = Date()
@@ -177,7 +191,7 @@ extension Notification.Name {
 
 /// Runs `work` and returns its result, or nil once `timeout` passes. Returns at the
 /// timeout even if `work` is slow to notice it was cancelled.
-private func firstResult(timeout: Duration, _ work: @escaping @Sendable () async -> String?) async -> String? {
+func firstResult(timeout: Duration, _ work: @escaping @Sendable () async -> String?) async -> String? {
     await withCheckedContinuation { continuation in
         let gate = OnceGate()
         let job = Task {

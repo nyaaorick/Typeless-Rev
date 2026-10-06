@@ -9,6 +9,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let installer = ModelInstaller.shared
     /// The model submenu's title, kept so download progress updates it while the menu is open.
     private var modelItem: NSMenuItem?
+    /// The same for the Whisper model.
+    private var whisperItem: NSMenuItem?
     /// Whether the speech models for the current language setting are on this Mac; nil while checking.
     private var speechDataReady: Bool?
     private var speechDataFailed = false
@@ -24,6 +26,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             self, selector: #selector(stateChanged), name: .voicePhaseChanged, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(modelChanged), name: .polishResidencyChanged, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(whisperChanged), name: .whisperChanged, object: nil)
         engine.onStateChange = { [weak self] _ in self?.stateChanged() }
         installer.onChange = { [weak self] in
             self?.stateChanged()
@@ -42,6 +46,13 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         guard let modelItem else { return }
         modelItem.title = modelTitle()
         modelItem.submenu = modelSubmenu()
+    }
+
+    /// Keeps the Whisper entry current while the menu is open.
+    @objc private func whisperChanged() {
+        guard let whisperItem else { return }
+        whisperItem.title = whisperTitle()
+        whisperItem.submenu = whisperSubmenu()
     }
 
     private func refreshIcon() {
@@ -72,6 +83,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         if VoiceSettings.polishDisabledByCrash {
             add("Polish was turned off after repeated crashes", enabled: false)
         }
+        if VoiceSettings.speechEngine == .whisper, let reason = whisperFallbackReason() {
+            add("Using Apple Speech: Whisper \(reason)", enabled: false)
+        }
 
         let language = NSMenuItem(title: "Speech Language", action: nil, keyEquivalent: "")
         language.submenu = NSMenu()
@@ -87,6 +101,19 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             language.submenu?.addItem(item)
         }
         menu.addItem(language)
+
+        let engineMenu = NSMenuItem(title: "Speech Engine", action: nil, keyEquivalent: "")
+        engineMenu.submenu = NSMenu()
+        engineMenu.submenu?.autoenablesItems = false
+        for engine in VoiceSettings.SpeechEngine.allCases {
+            let item = NSMenuItem(title: engine.title, action: #selector(selectEngine(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = engine.rawValue
+            item.state = engine == VoiceSettings.speechEngine ? .on : .off
+            item.isEnabled = true
+            engineMenu.submenu?.addItem(item)
+        }
+        menu.addItem(engineMenu)
 
         let key = NSMenuItem(title: "Push-to-Talk Key", action: nil, keyEquivalent: "")
         key.submenu = NSMenu()
@@ -124,6 +151,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         model.submenu = modelSubmenu()
         menu.addItem(model)
         modelItem = model
+        let whisper = NSMenuItem(title: whisperTitle(), action: nil, keyEquivalent: "")
+        whisper.submenu = whisperSubmenu()
+        menu.addItem(whisper)
+        whisperItem = whisper
 
         menu.addItem(.separator())
         add("Open Rime Folder", #selector(openRimeFolder))
@@ -198,17 +229,18 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     // MARK: - Polish model
 
     private func modelTitle() -> String {
+        let name = PolishModel.current == .qwen9b ? "9B" : "4B"
         switch installer.state {
-        case .notInstalled: return "Polish Model: Not Installed"
-        case .downloading(let fraction): return "Polish Model: Downloading \(Int(fraction * 100))%"
-        case .preparing: return "Polish Model: Preparing…"
+        case .notInstalled: return "Polish Model \(name): Not Installed"
+        case .downloading(let fraction): return "Polish Model \(name): Downloading \(Int(fraction * 100))%"
+        case .preparing: return "Polish Model \(name): Preparing…"
         case .installed(let bytes):
             switch PolishEngine.residency {
-            case .loaded: return "Polish Model: Loaded (\(Self.size(bytes)))"
-            case .loading: return "Polish Model: Loading…"
-            case .offloaded: return "Polish Model: Offloaded (\(Self.size(bytes)) on disk)"
+            case .loaded: return "Polish Model \(name): Loaded (\(Self.size(bytes)))"
+            case .loading: return "Polish Model \(name): Loading…"
+            case .offloaded: return "Polish Model \(name): Offloaded (\(Self.size(bytes)) on disk)"
             }
-        case .failed: return "Polish Model: Download Failed"
+        case .failed: return "Polish Model \(name): Download Failed"
         }
     }
 
@@ -221,13 +253,24 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             entry.isEnabled = action != nil
             submenu.addItem(entry)
         }
+        // Which model: one at a time, so picking the other unloads this one. Not while downloading.
+        let busy = installer.isRunning
+        for model in PolishModel.allCases {
+            let entry = NSMenuItem(title: model.title, action: #selector(selectPolishModel(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = model.rawValue
+            entry.state = model == PolishModel.current ? .on : .off
+            entry.isEnabled = !busy
+            submenu.addItem(entry)
+        }
+        submenu.addItem(.separator())
         switch installer.state {
         case .notInstalled:
-            item("Download (3 GB)", #selector(downloadModel))
+            item(PolishModel.current.downloadTitle, #selector(downloadModel))
         case .downloading:
             item("Cancel Download", #selector(cancelModel))
         case .preparing:
-            item("Removing the vision encoder…", nil)
+            item(PolishModel.current.hasVision ? "Removing the vision encoder…" : "Verifying the download…", nil)
         case .installed:
             // Loaded, it can be offloaded; offloaded, it can be loaded again or uninstalled.
             switch PolishEngine.residency {
@@ -243,6 +286,70 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         case .failed(let message):
             item(message, nil)
             item("Try Again", #selector(downloadModel))
+        }
+        return submenu
+    }
+
+    // MARK: - Whisper model
+
+    /// Why the next utterance will not use Whisper, or nil when it will.
+    private func whisperFallbackReason() -> String? {
+        switch WhisperEngine.install {
+        case .notInstalled: return "is not installed"
+        case .downloading: return "is downloading"
+        case .failed: return "failed to download"
+        case .installed:
+            if VoiceSettings.whisperOffloaded { return "is offloaded" }
+            switch WhisperEngine.residency {
+            case .loaded: return nil
+            case .loading: return "is loading"
+            case .offloaded: return "loads on the next key press"
+            }
+        }
+    }
+
+    private func whisperTitle() -> String {
+        switch WhisperEngine.install {
+        case .notInstalled: return "Whisper Model: Not Installed"
+        case .downloading(let fraction): return "Whisper Model: Downloading \(Int(fraction * 100))%"
+        case .failed: return "Whisper Model: Download Failed"
+        case .installed(let bytes):
+            switch WhisperEngine.residency {
+            case .loaded: return "Whisper Model: Loaded (\(Self.size(bytes)))"
+            case .loading: return "Whisper Model: Loading…"
+            case .offloaded: return "Whisper Model: Offloaded (\(Self.size(bytes)) on disk)"
+            }
+        }
+    }
+
+    private func whisperSubmenu() -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        func item(_ title: String, _ action: Selector?) {
+            let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            entry.target = self
+            entry.isEnabled = action != nil
+            submenu.addItem(entry)
+        }
+        switch WhisperEngine.install {
+        case .notInstalled:
+            item("Download (632 MB)", #selector(downloadWhisper))
+        case .downloading:
+            item("Cancel Download", #selector(cancelWhisper))
+        case .failed(let message):
+            item(message, nil)
+            item("Try Again", #selector(downloadWhisper))
+        case .installed:
+            switch WhisperEngine.residency {
+            case .loaded:
+                item("Offload from Memory", #selector(offloadWhisper))
+            case .loading:
+                item("Loading (the first load can take a few minutes)…", nil)
+                item("Cancel and Offload", #selector(offloadWhisper))
+            case .offloaded:
+                item("Load into Memory", #selector(loadWhisper))
+            }
+            item("Uninstall (Move to Trash)", #selector(removeWhisper))
         }
         return submenu
     }
@@ -290,6 +397,38 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     /// Applies at the next focus or language switch.
     @objc private func selectLayout(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? String { KeyboardLayout.setEnglish(id) }
+    }
+
+    /// Picking Whisper before it is installed starts the download; until it is loaded, Apple's text is used.
+    @objc private func selectEngine(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let engine = VoiceSettings.SpeechEngine(rawValue: raw)
+        else { return }
+        VoiceSettings.setSpeechEngine(engine)
+        guard engine == .whisper else { return }
+        if WhisperEngine.isInstalled { Task { await WhisperEngine.shared.load() } } else { downloadWhisper() }
+    }
+
+    @objc private func downloadWhisper() { Task { await WhisperEngine.shared.startInstall() } }
+    @objc private func cancelWhisper() { Task { await WhisperEngine.shared.cancelInstall() } }
+    @objc private func loadWhisper() { Task { await WhisperEngine.shared.load() } }
+    @objc private func offloadWhisper() { Task { await WhisperEngine.shared.offload() } }
+    @objc private func removeWhisper() { Task { await WhisperEngine.shared.uninstall() } }
+
+    /// Switches the polish model: the current one leaves memory first; the new one loads at the next
+    /// key press, or right away if it was loaded. Not installed, its download is offered.
+    @objc private func selectPolishModel(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let model = PolishModel(rawValue: raw),
+            model != PolishModel.current, !installer.isRunning
+        else { return }
+        let wasLoaded = PolishEngine.residency != .offloaded
+        Task {
+            await PolishEngine.shared.switchModel(to: model)
+            await MainActor.run {
+                self.installer.refresh()
+                self.modelChanged()
+            }
+            if wasLoaded { await PolishEngine.shared.warmUp() }
+        }
     }
 
     @objc private func downloadModel() { installer.install() }

@@ -21,6 +21,9 @@ packages:
   SwiftTransformers:
     url: https://github.com/huggingface/swift-transformers
     from: 1.3.4
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    from: 1.1.0
 
 targets:
   TypelessRev:
@@ -37,6 +40,8 @@ targets:
         product: MLXLMCommon
       - package: SwiftTransformers
         product: Tokenizers
+      - package: WhisperKit
+        product: WhisperKit
     info:
       path: Resources/Info.plist
       properties:

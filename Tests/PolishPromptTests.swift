@@ -36,6 +36,21 @@ final class PolishPromptTests: XCTestCase {
         XCTAssertNil(PolishPrompt.accept("Sure.", for: "please send the report to the whole team before noon tomorrow"))
     }
 
+    func testAcceptsASelfCorrectionThatDropsTheAbandonedWords() {
+        XCTAssertEqual(
+            PolishPrompt.accept(
+                "Just to check the current pipeline.",
+                for: "just to check the cream pop line cringed pipeline I mean the current current current pipeline"),
+            "Just to check the current pipeline.")
+    }
+
+    func testTimeoutScalesForALargerModel() {
+        let text = String(repeating: "a", count: 40)
+        XCTAssertEqual(PolishPrompt.timeout(for: text), .milliseconds(4_000))
+        XCTAssertEqual(PolishPrompt.timeout(for: text, scale: 2), .milliseconds(8_000))
+        XCTAssertEqual(PolishPrompt.timeout(for: String(repeating: "a", count: 1_000), scale: 2), .milliseconds(20_000))
+    }
+
     func testShortTranscriptsMayShrinkFreely() {
         XCTAssertEqual(PolishPrompt.accept("Hi.", for: "um hi"), "Hi.")
     }
