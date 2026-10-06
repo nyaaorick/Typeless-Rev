@@ -38,8 +38,13 @@ enum UISelfTest {
         }
         check("menu has a microphone entry", titles.contains { $0.hasPrefix("Microphone:") })
         check("menu has a speech data entry", titles.contains { $0.hasPrefix("Speech Data:") })
-        check("menu has a polish model entry", titles.contains { $0.hasPrefix("Polish Model ") })
-        check("menu has a Whisper model entry", titles.contains { $0.hasPrefix("Whisper Model:") })
+        check("menu has a polish model entry", status.menu.items.first { $0.title == "Polish Model" }?.subtitle?.hasPrefix("Qwen") == true)
+        check("menu has a Whisper model entry", status.menu.items.first { $0.title == "Whisper Model" }?.subtitle != nil)
+        let headers = status.menu.items.filter(\.isSectionHeader).map(\.title)
+        check("the menu is grouped into sections", headers == ["Setup", "Dictation", "Models", "Typing"], headers.joined(separator: ", "))
+        check("submenus show the current choice", status.menu.items.first { $0.title == "Push-to-Talk Key" }?.subtitle
+            == VoiceSettings.pushToTalkKey.title)
+        check("submenu entries are enabled", status.menu.items.filter { $0.submenu != nil }.allSatisfy(\.isEnabled))
         let engines = status.menu.items.first { $0.title == "Speech Engine" }?.submenu?.items.map(\.title) ?? []
         check("speech engine offers Apple and Whisper", engines == VoiceSettings.SpeechEngine.allCases.map(\.title))
         check("actions are enabled", status.menu.items.filter { $0.action != nil && $0.title != "Redeploy Rime" }
@@ -116,8 +121,9 @@ enum UISelfTest {
         VoiceHUD.shared.show(.listening, anchor: caret)
         let listening = VoiceHUD.shared.frame
         check("the HUD shows while listening", VoiceHUD.shared.isVisible, "\(Int(listening.width))x\(Int(listening.height))")
-        check("the HUD is a compact pill", listening.height == 30 && (80...200).contains(listening.width))
+        check("the HUD is a compact pill", listening.height == 36 && (80...200).contains(listening.width))
         check("the HUD sits below the caret", listening.maxY <= caret.minY)
+        check("the HUD is two layers of clear Liquid Glass", VoiceHUD.shared.usesGlass)
         VoiceHUD.shared.setLevel(0.8)
         VoiceHUD.shared.show(.polishing, anchor: caret)
         check("the HUD stays up while polishing", VoiceHUD.shared.isVisible)
@@ -125,6 +131,15 @@ enum UISelfTest {
         check("the HUD hides when idle", !VoiceHUD.shared.isVisible)
         VoiceHUD.shared.show(.idle, anchor: caret)
         check("showing the idle phase hides it", !VoiceHUD.shared.isVisible)
+
+        // MARK: candidate bar
+        let rows = ["你好", "你还好吗", "拟好"].enumerated().map { CandidateRow(label: "\($0 + 1)", text: $1, comment: "") }
+        CandidatePanel.shared.present(rows: rows, highlighted: 1, anchor: caret, onPick: { _ in })
+        check("the candidate bar shows", CandidatePanel.shared.isVisible)
+        check("the highlight is blue glass holding its own text", CandidatePanel.shared.highlightIsGlassHoldingText)
+        CandidatePanel.shared.presentTip("Caps Lock on", anchor: caret)
+        check("a tip has no highlight", !CandidatePanel.shared.highlightIsGlassHoldingText)
+        CandidatePanel.shared.hide()
 
         print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
         return failures == 0 ? 0 : 1

@@ -7,7 +7,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     let menu = NSMenu()
     private let engine = RimeEngine.shared
     private let installer = ModelInstaller.shared
-    /// The model submenu's title, kept so download progress updates it while the menu is open.
+    /// The polish model entry, kept so download progress updates its subtitle while the menu is open.
     private var modelItem: NSMenuItem?
     /// The same for the Whisper model.
     private var whisperItem: NSMenuItem?
@@ -46,14 +46,14 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     /// Keeps the model entry current while the menu is open (download progress, load finishing).
     @objc private func modelChanged() {
         guard let modelItem else { return }
-        modelItem.title = modelTitle()
+        modelItem.subtitle = modelStatus()
         modelItem.submenu = modelSubmenu()
     }
 
     /// Keeps the Whisper entry current while the menu is open.
     @objc private func whisperChanged() {
         guard let whisperItem else { return }
-        whisperItem.title = whisperTitle()
+        whisperItem.subtitle = whisperStatus()
         whisperItem.submenu = whisperSubmenu()
     }
 
@@ -73,124 +73,117 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     // MARK: - Menu
 
+    /// Health first (what is happening, what needs attention, first-run setup), then the settings
+    /// grouped by what they act on: dictation, the models behind it, and typing.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         refreshSpeechData()
 
-        add(statusText(), enabled: false)
-        menu.addItem(.separator())
-
-        let polish = add("Polish with Local LLM", #selector(togglePolish))
-        polish.state = VoiceSettings.polishEnabled ? .on : .off
+        let (statusTitle, statusSymbol) = statusText()
+        add(statusTitle, enabled: false, symbol: statusSymbol)
         if VoiceSettings.polishDisabledByCrash {
-            add("Polish was turned off after repeated crashes", enabled: false)
+            add("Polish was turned off after repeated crashes", enabled: false, symbol: "exclamationmark.triangle")
         }
         if let note = memoryNote() {
-            add(note, enabled: false)
+            add(note, enabled: false, symbol: "memorychip")
         } else if VoiceSettings.speechEngine == .whisper, let reason = whisperFallbackReason() {
-            add("Using Apple Speech: Whisper \(reason)", enabled: false)
+            add("Using Apple Speech: Whisper \(reason)", enabled: false, symbol: "info.circle")
         }
 
-        let language = NSMenuItem(title: "Speech Language", action: nil, keyEquivalent: "")
-        language.submenu = NSMenu()
-        language.submenu?.autoenablesItems = false
-        let choices = [(id: VoiceSettings.autoDetect, name: "Auto-Detect")] + VoiceSettings.localeChoices
-        for (index, choice) in choices.enumerated() {
-            if index == 1 { language.submenu?.addItem(.separator()) }
-            let item = NSMenuItem(title: choice.name, action: #selector(selectLanguage(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = choice.id
-            item.state = choice.id == VoiceSettings.localeIdentifier ? .on : .off
-            item.isEnabled = true
-            language.submenu?.addItem(item)
-        }
-        menu.addItem(language)
-
-        let engineMenu = NSMenuItem(title: "Speech Engine", action: nil, keyEquivalent: "")
-        engineMenu.submenu = NSMenu()
-        engineMenu.submenu?.autoenablesItems = false
-        for engine in VoiceSettings.SpeechEngine.allCases {
-            let item = NSMenuItem(title: engine.title, action: #selector(selectEngine(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = engine.rawValue
-            item.state = engine == VoiceSettings.speechEngine ? .on : .off
-            item.isEnabled = true
-            engineMenu.submenu?.addItem(item)
-        }
-        menu.addItem(engineMenu)
-
-        let key = NSMenuItem(title: "Push-to-Talk Key", action: nil, keyEquivalent: "")
-        key.submenu = NSMenu()
-        key.submenu?.autoenablesItems = false
-        for option in PushToTalkKey.allCases {
-            let item = NSMenuItem(title: option.title, action: #selector(selectKey(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = option.rawValue
-            item.state = option == VoiceSettings.pushToTalkKey ? .on : .off
-            item.isEnabled = true
-            key.submenu?.addItem(item)
-        }
-        menu.addItem(key)
-
-        // The layout English mode types with; Chinese mode always uses ABC for pinyin.
-        let layout = NSMenuItem(title: "English Keyboard Layout", action: nil, keyEquivalent: "")
-        layout.submenu = NSMenu()
-        layout.submenu?.autoenablesItems = false
-        let current = KeyboardLayout.english
-        for choice in KeyboardLayout.choices {
-            let item = NSMenuItem(title: choice.name, action: #selector(selectLayout(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = choice.id
-            item.state = choice.id == current ? .on : .off
-            item.isEnabled = true
-            layout.submenu?.addItem(item)
-        }
-        menu.addItem(layout)
-
-        menu.addItem(.separator())
+        section("Setup")
         addPermissionItems()
 
-        menu.addItem(.separator())
-        let model = NSMenuItem(title: modelTitle(), action: nil, keyEquivalent: "")
-        model.submenu = modelSubmenu()
-        menu.addItem(model)
-        modelItem = model
-        let whisper = NSMenuItem(title: whisperTitle(), action: nil, keyEquivalent: "")
-        whisper.submenu = whisperSubmenu()
-        menu.addItem(whisper)
-        whisperItem = whisper
+        section("Dictation")
+        addChoices(
+            "Push-to-Talk Key", symbol: "keyboard", #selector(selectKey(_:)),
+            PushToTalkKey.allCases.map { ($0.rawValue, $0.title) }, selected: VoiceSettings.pushToTalkKey.rawValue)
+        let languages = [(id: VoiceSettings.autoDetect, name: "Auto-Detect")] + VoiceSettings.localeChoices
+        addChoices(
+            "Speech Language", symbol: "globe", #selector(selectLanguage(_:)),
+            languages.map { ($0.id, $0.name) }, selected: VoiceSettings.localeIdentifier, separatorAfterFirst: true)
+        addChoices(
+            "Speech Engine", symbol: "waveform", #selector(selectEngine(_:)),
+            VoiceSettings.SpeechEngine.allCases.map { ($0.rawValue, $0.title) },
+            selected: VoiceSettings.speechEngine.rawValue)
+        let polish = add("Polish with Local LLM", #selector(togglePolish), symbol: "sparkles")
+        polish.state = VoiceSettings.polishEnabled ? .on : .off
 
-        let downgrade = add("Auto-Downgrade Under Memory Pressure", #selector(toggleAutoDowngrade))
+        section("Models")
+        let whisper = add("Whisper Model", symbol: "waveform.badge.mic")
+        whisper.isEnabled = true
+        whisper.submenu = whisperSubmenu()
+        whisper.subtitle = whisperStatus()
+        whisperItem = whisper
+        let model = add("Polish Model", symbol: "cpu")
+        model.isEnabled = true
+        model.submenu = modelSubmenu()
+        model.subtitle = modelStatus()
+        modelItem = model
+        let downgrade = add("Auto-Downgrade Under Memory Pressure", #selector(toggleAutoDowngrade), symbol: "gauge.with.dots.needle.33percent")
         downgrade.state = VoiceSettings.autoDowngrade ? .on : .off
 
-        menu.addItem(.separator())
-        add("Open Rime Folder", #selector(openRimeFolder))
-        let redeploy = add("Redeploy Rime", #selector(redeployRime))
+        // The layout English mode types with; Chinese mode always uses ABC for pinyin.
+        section("Typing")
+        addChoices(
+            "English Keyboard Layout", symbol: "character.cursor.ibeam", #selector(selectLayout(_:)),
+            KeyboardLayout.choices.map { ($0.id, $0.name) }, selected: KeyboardLayout.english)
+        add("Open Rime Folder", #selector(openRimeFolder), symbol: "folder")
+        let redeploy = add("Redeploy Rime", #selector(redeployRime), symbol: "arrow.clockwise")
         redeploy.isEnabled = engine.state == .ready || engine.state == .failed
 
         menu.addItem(.separator())
-        add("About Typeless-Rev", #selector(showAbout))
-        add("Quit Typeless-Rev", #selector(quit), key: "q")
+        add("About Typeless-Rev", #selector(showAbout), symbol: "info.circle")
+        add("Quit Typeless-Rev", #selector(quit), key: "q", symbol: "power")
     }
 
     @discardableResult
-    private func add(_ title: String, _ action: Selector? = nil, key: String = "", enabled: Bool = true) -> NSMenuItem {
+    private func add(
+        _ title: String, _ action: Selector? = nil, key: String = "", enabled: Bool = true, symbol: String? = nil
+    ) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.target = self
+        // An item with a submenu needs no action to stay enabled.
         item.isEnabled = enabled && action != nil
+        if let symbol { item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
         menu.addItem(item)
         return item
     }
 
-    private func statusText() -> String {
+    private func section(_ title: String) {
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: title))
+    }
+
+    /// A submenu of mutually exclusive choices, with the current one shown under the title.
+    private func addChoices(
+        _ title: String, symbol: String, _ action: Selector, _ choices: [(id: String, name: String)],
+        selected: String, separatorAfterFirst: Bool = false
+    ) {
+        let parent = add(title, symbol: symbol)
+        parent.isEnabled = true
+        parent.subtitle = choices.first { $0.id == selected }?.name
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        for (index, choice) in choices.enumerated() {
+            if separatorAfterFirst && index == 1 { submenu.addItem(.separator()) }
+            let item = NSMenuItem(title: choice.name, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.id
+            item.state = choice.id == selected ? .on : .off
+            submenu.addItem(item)
+        }
+        parent.submenu = submenu
+    }
+
+    private func statusText() -> (String, String) {
         switch VoiceStatus.phase {
-        case .listening: return "Listening…"
-        case .polishing: return "Polishing…"
+        case .listening: return ("Listening…", "mic.fill")
+        case .polishing: return ("Polishing…", "sparkles")
         case .idle:
             switch engine.state {
-            case .deploying: return "Deploying Rime…"
-            case .failed: return "Rime failed to start"
-            default: return "Ready"
+            case .deploying: return ("Deploying Rime…", "arrow.triangle.2.circlepath")
+            case .failed: return ("Rime failed to start", "exclamationmark.triangle")
+            default: return ("Ready", "checkmark.circle")
             }
         }
     }
@@ -201,21 +194,25 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private func addPermissionItems() {
         let microphone = MicrophonePermission.status
         if let action = microphone.actionTitle {
-            let item = add(microphone.menuTitle("Microphone") + " — " + action, #selector(fixMicrophone))
+            let item = add(microphone.menuTitle("Microphone"), #selector(fixMicrophone), symbol: "mic.slash")
+            item.subtitle = action
             item.representedObject = microphone == .notDetermined
         } else {
-            add(microphone.menuTitle("Microphone"), enabled: false)
+            add(microphone.menuTitle("Microphone"), enabled: false, symbol: "mic")
         }
 
+        let speechData = "arrow.down.circle"
         if VoiceAssets.isInstalling {
-            add("Speech Data: Downloading…", enabled: false)
+            add("Speech Data: Downloading…", enabled: false, symbol: speechData)
         } else if speechDataFailed {
-            add("Speech Data: Download Failed — Try Again", #selector(downloadSpeechData))
+            add("Speech Data: Download Failed", #selector(downloadSpeechData), symbol: "exclamationmark.triangle")
+                .subtitle = "Try Again"
         } else {
             switch speechDataReady {
-            case .some(true): add("Speech Data: Ready", enabled: false)
-            case .some(false): add("Speech Data: Not Installed — Download…", #selector(downloadSpeechData))
-            case .none: add("Speech Data: Checking…", enabled: false)
+            case .some(true): add("Speech Data: Ready", enabled: false, symbol: "checkmark.circle")
+            case .some(false):
+                add("Speech Data: Not Installed", #selector(downloadSpeechData), symbol: speechData).subtitle = "Download…"
+            case .none: add("Speech Data: Checking…", enabled: false, symbol: speechData)
             }
         }
     }
@@ -235,20 +232,23 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     // MARK: - Polish model
 
-    private func modelTitle() -> String {
-        let name = PolishModel.current == .qwen9b ? "9B" : "4B"
-        switch installer.state {
-        case .notInstalled: return "Polish Model \(name): Not Installed"
-        case .downloading(let fraction): return "Polish Model \(name): Downloading \(Int(fraction * 100))%"
-        case .preparing: return "Polish Model \(name): Preparing…"
-        case .installed(let bytes):
-            switch PolishEngine.residency {
-            case .loaded: return "Polish Model \(name): Loaded (\(Self.size(bytes)))"
-            case .loading: return "Polish Model \(name): Loading…"
-            case .offloaded: return "Polish Model \(name): Offloaded (\(Self.size(bytes)) on disk)"
+    /// The selected polish model and where it is, shown under the menu entry.
+    private func modelStatus() -> String {
+        let name = PolishModel.current == .qwen9b ? "Qwen 9B" : "Qwen 4B"
+        let state: String =
+            switch installer.state {
+            case .notInstalled: "Not Installed"
+            case .downloading(let fraction): "Downloading \(Int(fraction * 100))%"
+            case .preparing: "Preparing…"
+            case .installed(let bytes):
+                switch PolishEngine.residency {
+                case .loaded: "Loaded · \(Self.size(bytes))"
+                case .loading: "Loading…"
+                case .offloaded: "Offloaded · \(Self.size(bytes)) on disk"
+                }
+            case .failed: "Download Failed"
             }
-        case .failed: return "Polish Model \(name): Download Failed"
-        }
+        return "\(name) · \(state)"
     }
 
     private func modelSubmenu() -> NSMenu {
@@ -336,16 +336,17 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         }
     }
 
-    private func whisperTitle() -> String {
+    /// Where the Whisper model is, shown under the menu entry.
+    private func whisperStatus() -> String {
         switch WhisperEngine.install {
-        case .notInstalled: return "Whisper Model: Not Installed"
-        case .downloading(let fraction): return "Whisper Model: Downloading \(Int(fraction * 100))%"
-        case .failed: return "Whisper Model: Download Failed"
+        case .notInstalled: return "Not Installed"
+        case .downloading(let fraction): return "Downloading \(Int(fraction * 100))%"
+        case .failed: return "Download Failed"
         case .installed(let bytes):
             switch WhisperEngine.residency {
-            case .loaded: return "Whisper Model: Loaded (\(Self.size(bytes)))"
-            case .loading: return "Whisper Model: Loading…"
-            case .offloaded: return "Whisper Model: Offloaded (\(Self.size(bytes)) on disk)"
+            case .loaded: return "Loaded · \(Self.size(bytes))"
+            case .loading: return "Loading…"
+            case .offloaded: return "Offloaded · \(Self.size(bytes)) on disk"
             }
         }
     }

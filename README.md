@@ -99,7 +99,7 @@ runs one check, prints PASS/FAIL lines, and exits non-zero on failure:
 | Command | What it checks |
 | --- | --- |
 | `Typeless-Rev --selftest` | Embedded librime: deploy, typing, candidates, ASCII punctuation (including shifted keys as AppKit delivers them) and Chinese-characters-only candidates, focus-loss flush, simplified output, upgrade from the first-release config, Caps Lock reset, secure-input detection, redeploy. |
-| `Typeless-Rev --selftest-ui` | The menu bar menu (items, permission lines, settings, checkmarks, icon state), the polish crash-loop breaker, and the HUD (size, placement, show/hide). Restores your settings. |
+| `Typeless-Rev --selftest-ui` | The menu bar menu (items, permission lines, settings, checkmarks, icon state), the polish crash-loop breaker, the HUD (size, placement, show/hide, glass layers), and the candidate bar (glass highlight). Restores your settings. |
 | `Typeless-Rev --selftest-speech` | Synthesized en-US and zh-CN speech through `VoiceSession`: transcript, live updates, cancel; then the auto-detecting path on English, Chinese and mixed phrases (with a deliberately wrong mode hint), printing each recognizer's confidence. Downloads the speech models on first run. |
 | `Typeless-Rev --selftest-polish` | The polish model: cold and warm latency, filler removal (zh, en), an injection attempt, the timeout, memory handed back after an unload, reload. Needs the model installed. |
 | `Typeless-Rev --disable-legacy` | Not a test: turns off input sources an older build registered (`install.sh` runs it). |
