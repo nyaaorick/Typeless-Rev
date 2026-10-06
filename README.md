@@ -33,6 +33,40 @@ No extra permission is needed for any of this.
 If your Mac is set to use Caps Lock to switch input sources (Keyboard > Input Sources), macOS
 handles the key before this input method sees it; turn that option off to use it for the mode.
 
+Because the real lock is on after every other press, macOS draws its blue Caps Lock indicator under
+the text cursor about a second after typing stops, and it shows through the clear glass candidate
+bar. Turn the indicator off (it also hides the input-source pop-up; takes effect after logging out
+and back in):
+
+```sh
+defaults write kCFPreferencesAnyApplication TSMLanguageIndicatorEnabled -bool false
+# undo: defaults delete kCFPreferencesAnyApplication TSMLanguageIndicatorEnabled
+```
+
+## Install (no building)
+
+Needs a Mac with Apple silicon and macOS 26 or later. Download `Typeless-Rev-<version>.pkg`
+from the Releases page. The installer is not notarized by Apple, so macOS stops it the first time:
+
+1. Double-click the `.pkg`. macOS says it cannot be opened; click **Done**.
+2. Open **System Settings > Privacy & Security**, scroll to the bottom, and click **Open Anyway**
+   next to "Typeless-Rev-….pkg was blocked". Enter your password.
+3. The installer opens: click **Continue** through to the end. It installs for your user only
+   (`~/Library/Input Methods`) and turns the input source on.
+
+Then pick **Typeless-Rev** in the input menu in the menu bar, turn off "Use the Caps Lock key to
+switch to and from ABC" (System Settings > Keyboard > Input Sources), and in the microphone menu
+allow the microphone and download the speech data. Hold **Right Option** and speak.
+
+To update, install the newer `.pkg` the same way. To uninstall, remove the source from Input Sources
+and delete `~/Library/Input Methods/Typeless-Rev.app`.
+
+Maintainers build the package with `scripts/package.sh` (prints the `.pkg` path). The app inside is
+signed with this Mac's identity (see Signing) so the microphone grant survives updates; that
+identity's name, an Apple ID email for a Personal Team certificate, is visible to anyone who
+inspects the app. `SIGN_IDENTITY="-" scripts/package.sh` signs ad-hoc instead, at the cost of a
+new microphone prompt after each update.
+
 ## Requirements
 
 macOS 26+, Xcode 26, `xcodegen`, `gh` (authenticated) and `brew`. Homebrew is only used to
