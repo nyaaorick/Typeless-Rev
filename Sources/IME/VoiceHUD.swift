@@ -61,23 +61,27 @@ final class VoiceHUD {
 
 /// The label on the outer glass, and the indicator in its own inner glass capsule.
 private final class HUDContentView: NSView {
-    static let height: CGFloat = 36
+    static let height: CGFloat = 28
     /// The gap between the outer and inner capsules, the same all round so the curves nest.
-    private static let inset: CGFloat = 4
+    private static let inset: CGFloat = 3
+    private static let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
 
-    private let label = NSTextField(labelWithString: "")
     private let platter = NSGlassEffectView()
     private let indicator = IndicatorView()
+    /// Drawn directly: an NSTextField cell on glass came out a little wider than its intrinsic
+    /// size and cut "Listening" short.
+    private var text = ""
 
     var hasInnerGlass: Bool { platter.superview === self }
 
     var phase = VoicePhase.idle {
         didSet {
-            label.stringValue = phase == .polishing ? "Polishing" : "Listening"
+            text = phase == .polishing ? "Polishing" : "Listening"
             indicator.phase = phase
             // A red cast on the inner capsule while the microphone is live; plain glass while polishing.
             platter.tintColor = phase == .listening ? NSColor.systemRed.withAlphaComponent(0.35) : nil
             needsLayout = true
+            needsDisplay = true
         }
     }
 
@@ -88,22 +92,22 @@ private final class HUDContentView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         autoresizingMask = [.width, .height]
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        label.textColor = .labelColor
         platter.style = .clear
         platter.cornerRadius = (Self.height - Self.inset * 2) / 2
         platter.contentView = indicator
         addSubview(platter)
-        addSubview(label)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    private var platterWidth: CGFloat { indicator.width + 2 * 10 }
+    private var attributes: [NSAttributedString.Key: Any] { [.font: Self.font, .foregroundColor: NSColor.labelColor] }
+    private var textWidth: CGFloat { ceil((text as NSString).size(withAttributes: attributes).width) }
+    private var platterWidth: CGFloat { indicator.width + 2 * 8 }
+    private let textGap: CGFloat = 7
+    private let trailing: CGFloat = 12
 
     override var fittingSize: NSSize {
-        let text = ceil(label.intrinsicContentSize.width)
-        return NSSize(width: Self.inset + platterWidth + 10 + text + 16, height: Self.height)
+        NSSize(width: Self.inset + platterWidth + textGap + textWidth + trailing, height: Self.height)
     }
 
     override func layout() {
@@ -111,10 +115,12 @@ private final class HUDContentView: NSView {
         let inset = Self.inset
         platter.frame = NSRect(x: inset, y: inset, width: platterWidth, height: bounds.height - inset * 2)
         indicator.frame = platter.bounds
-        let size = label.intrinsicContentSize
-        label.frame = NSRect(
-            x: platter.frame.maxX + 10, y: (bounds.height - size.height) / 2, width: ceil(size.width),
-            height: size.height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let size = (text as NSString).size(withAttributes: attributes)
+        (text as NSString).draw(
+            at: NSPoint(x: platter.frame.maxX + textGap, y: (bounds.height - size.height) / 2), withAttributes: attributes)
     }
 }
 
@@ -138,7 +144,7 @@ private final class IndicatorView: NSView {
     }
 
     /// The content width; the capsule adds its own padding.
-    var width: CGFloat { phase == .listening ? 8 + 6 + 28 : 16 }
+    var width: CGFloat { phase == .listening ? 6 + 5 + 22 : 14 }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -159,16 +165,16 @@ private final class IndicatorView: NSView {
     override func layout() {
         super.layout()
         if phase == .listening {
-            meter.frame = NSRect(x: originX + 8 + 6, y: (bounds.height - 16) / 2, width: 28, height: 16)
+            meter.frame = NSRect(x: originX + 6 + 5, y: (bounds.height - 12) / 2, width: 22, height: 12)
         } else {
-            spinner.frame = NSRect(x: originX, y: (bounds.height - 16) / 2, width: 16, height: 16)
+            spinner.frame = NSRect(x: originX, y: (bounds.height - 14) / 2, width: 14, height: 14)
         }
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard phase == .listening else { return }
         NSColor.systemRed.setFill()
-        NSBezierPath(ovalIn: NSRect(x: originX, y: (bounds.height - 8) / 2, width: 8, height: 8)).fill()
+        NSBezierPath(ovalIn: NSRect(x: originX, y: (bounds.height - 6) / 2, width: 6, height: 6)).fill()
     }
 }
 

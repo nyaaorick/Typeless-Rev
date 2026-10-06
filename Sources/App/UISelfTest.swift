@@ -121,7 +121,7 @@ enum UISelfTest {
         VoiceHUD.shared.show(.listening, anchor: caret)
         let listening = VoiceHUD.shared.frame
         check("the HUD shows while listening", VoiceHUD.shared.isVisible, "\(Int(listening.width))x\(Int(listening.height))")
-        check("the HUD is a compact pill", listening.height == 36 && (80...200).contains(listening.width))
+        check("the HUD is a compact pill", listening.height == 28 && (80...150).contains(listening.width))
         check("the HUD sits below the caret", listening.maxY <= caret.minY)
         check("the HUD is two layers of clear Liquid Glass", VoiceHUD.shared.usesGlass)
         VoiceHUD.shared.setLevel(0.8)
