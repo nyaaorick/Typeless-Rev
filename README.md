@@ -84,6 +84,7 @@ SPEECH=1 scripts/selftest.sh   # ...and the speech pipeline (downloads speech mo
 POLISH=1 scripts/selftest.sh   # ...and the polish model (run scripts/prepare-model.sh first)
 scripts/prepare-model.sh       # the menu's "Download" without the menu: install the polish model (2.4 GB)
 scripts/install.sh        # build, copy to ~/Library/Input Methods, register + enable
+./launch.command          # the same, then start it and follow its log (double-click it in Finder)
 scripts/setup-signing.sh  # once: a stable signing identity, so the microphone grant survives rebuilds
 ```
 
