@@ -1,4 +1,5 @@
-// Renders the input-method menu icon: a monochrome rounded square with a "T".
+// Renders the input-method menu icon: a monochrome rounded square holding three level bars and a
+// text cursor, the app icon's motif at menu bar size.
 // Usage: swift scripts/make-icon.swift Resources/InputIcon.pdf
 //
 // The page is 16 x 16 pt, the size macOS expects for an input source icon. A 32 pt page was
@@ -19,11 +20,17 @@ let frame = NSBezierPath(roundedRect: box.insetBy(dx: 1.5, dy: 1.5), xRadius: 3.
 frame.lineWidth = 1
 frame.stroke()
 
-let glyph = NSAttributedString(
-    string: "T",
-    attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .bold), .foregroundColor: NSColor.black])
-let size = glyph.size()
-glyph.draw(at: NSPoint(x: box.midX - size.width / 2, y: box.midY - size.height / 2))
+// Three bars, weighted like the HUD meter, then a thinner cursor, centred in the frame.
+NSColor.black.setFill()
+let bars: [(width: CGFloat, height: CGFloat)] = [(1.6, 4), (1.6, 7), (1.6, 4), (1, 6)]
+let gap: CGFloat = 1.3
+var x = box.midX - (bars.reduce(0) { $0 + $1.width } + gap * CGFloat(bars.count - 1) + 0.4) / 2
+for (index, bar) in bars.enumerated() {
+    if index == bars.count - 1 { x += 0.4 }  // a little more room before the cursor
+    let rect = NSRect(x: x, y: box.midY - bar.height / 2, width: bar.width, height: bar.height)
+    NSBezierPath(roundedRect: rect, xRadius: bar.width / 2, yRadius: bar.width / 2).fill()
+    x += bar.width + gap
+}
 
 context.endPDFPage()
 context.closePDF()

@@ -13,6 +13,7 @@ cd "$ROOT"
 
 "$ROOT/scripts/fetch-vendor.sh" >&2
 [[ -f Resources/InputIcon.pdf ]] || swift scripts/make-icon.swift Resources/InputIcon.pdf >&2
+[[ -f Resources/AppIcon.icns ]] || swift scripts/make-app-icon.swift Resources/AppIcon.icns >&2
 xcodegen generate --quiet >&2
 
 ARCHS="${ARCHS:-$(uname -m)}"
